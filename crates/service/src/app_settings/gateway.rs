@@ -53,6 +53,7 @@ pub struct BackgroundTasksInput {
     pub http_worker_min: Option<usize>,
     pub http_stream_worker_factor: Option<usize>,
     pub http_stream_worker_min: Option<usize>,
+    pub auto_warmup_after_quota_refresh_enabled: Option<bool>,
     pub warmup_cron_enabled: Option<bool>,
     pub warmup_cron_expression: Option<String>,
 }
@@ -82,6 +83,7 @@ impl BackgroundTasksInput {
             http_worker_min: self.http_worker_min,
             http_stream_worker_factor: self.http_stream_worker_factor,
             http_stream_worker_min: self.http_stream_worker_min,
+            auto_warmup_after_quota_refresh_enabled: self.auto_warmup_after_quota_refresh_enabled,
             warmup_cron_enabled: self.warmup_cron_enabled,
             warmup_cron_expression: self.warmup_cron_expression,
         }

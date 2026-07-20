@@ -1,11 +1,66 @@
 use super::{
-    build_warmup_headers, consume_warmup_stream, resolve_target_accounts,
-    resolve_warmup_model_slug, should_retry_warmup_with_refresh, DEFAULT_WARMUP_MODEL,
+    build_warmup_headers, clear_auto_warmup_task_pending, consume_warmup_stream,
+    mark_auto_warmup_task_pending, resolve_target_accounts, resolve_warmup_model_slug,
+    should_retry_warmup_with_refresh, try_enqueue_auto_warmup_task, AutoWarmupTask,
+    WarmupAccountInFlightGuard, DEFAULT_WARMUP_MODEL,
 };
 use codexmanager_core::storage::{
     now_ts, Account, ManagedModelV2, ManagedModelV2Upsert, ModelPriceV2, Storage, Token,
 };
 use std::io::Cursor;
+use std::sync::mpsc::sync_channel;
+
+#[test]
+fn auto_warmup_pending_tasks_are_deduplicated_and_released() {
+    let account_id = "test-auto-warmup-dedupe";
+    clear_auto_warmup_task_pending(account_id);
+
+    assert!(mark_auto_warmup_task_pending(account_id));
+    assert!(!mark_auto_warmup_task_pending(account_id));
+
+    clear_auto_warmup_task_pending(account_id);
+    assert!(mark_auto_warmup_task_pending(account_id));
+    clear_auto_warmup_task_pending(account_id);
+}
+
+#[test]
+fn all_warmup_entries_share_per_account_in_flight_guard() {
+    let first = WarmupAccountInFlightGuard::try_acquire("shared-account")
+        .expect("first warmup should acquire account guard");
+    assert!(WarmupAccountInFlightGuard::try_acquire("shared-account").is_none());
+
+    let other = WarmupAccountInFlightGuard::try_acquire("other-account")
+        .expect("a different account must not be blocked");
+    drop(other);
+    drop(first);
+
+    assert!(WarmupAccountInFlightGuard::try_acquire("shared-account").is_some());
+}
+
+#[test]
+fn full_auto_warmup_queue_releases_pending_marker() {
+    let (sender, _receiver) = sync_channel(1);
+    sender
+        .try_send(AutoWarmupTask {
+            account_id: "queue-filler".to_string(),
+            reason: "test".to_string(),
+        })
+        .expect("fill test queue");
+
+    let account_id = "queue-full-account";
+    clear_auto_warmup_task_pending(account_id);
+    assert!(mark_auto_warmup_task_pending(account_id));
+    assert!(!try_enqueue_auto_warmup_task(
+        &sender,
+        AutoWarmupTask {
+            account_id: account_id.to_string(),
+            reason: "test_queue_full".to_string(),
+        },
+    ));
+
+    assert!(mark_auto_warmup_task_pending(account_id));
+    clear_auto_warmup_task_pending(account_id);
+}
 
 fn make_model(slug: &str, sort_order: i64, supported_in_api: bool) -> ManagedModelV2Upsert {
     ManagedModelV2Upsert {

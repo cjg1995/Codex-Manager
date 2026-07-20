@@ -3,8 +3,12 @@ use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::Serialize;
 use serde_json::json;
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read};
-use std::time::Instant;
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
+use std::sync::{Mutex, OnceLock};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::account_status::mark_account_unavailable_for_auth_error;
 use crate::storage_helpers::open_storage;
@@ -15,6 +19,46 @@ const DEFAULT_WARMUP_MESSAGE: &str = "hi";
 const FALLBACK_WARMUP_MESSAGE: &str = "你好";
 const WARMUP_UPSTREAM_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const DEFAULT_WARMUP_MODEL: &str = "gpt-5.3-codex";
+const WARMUP_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
+const AUTO_WARMUP_QUEUE_CAPACITY: usize = 128;
+
+static PENDING_AUTO_WARMUP_TASKS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static WARMUP_ACCOUNTS_IN_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static AUTO_WARMUP_QUEUE: OnceLock<SyncSender<AutoWarmupTask>> = OnceLock::new();
+
+#[derive(Debug)]
+struct AutoWarmupTask {
+    account_id: String,
+    reason: String,
+}
+
+struct WarmupAccountInFlightGuard {
+    account_id: String,
+}
+
+impl WarmupAccountInFlightGuard {
+    fn try_acquire(account_id: &str) -> Option<Self> {
+        let account_id = account_id.trim();
+        if account_id.is_empty() {
+            return None;
+        }
+        let mutex = WARMUP_ACCOUNTS_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
+        let mut in_flight = crate::lock_utils::lock_recover(mutex, "warmup_accounts_in_flight");
+        in_flight.insert(account_id.to_string()).then(|| Self {
+            account_id: account_id.to_string(),
+        })
+    }
+}
+
+impl Drop for WarmupAccountInFlightGuard {
+    fn drop(&mut self) {
+        let Some(mutex) = WARMUP_ACCOUNTS_IN_FLIGHT.get() else {
+            return;
+        };
+        let mut in_flight = crate::lock_utils::lock_recover(mutex, "warmup_accounts_in_flight");
+        in_flight.remove(&self.account_id);
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,6 +111,16 @@ pub(crate) fn warmup_accounts(
     let mut succeeded = 0usize;
 
     for target in accounts.drain(..) {
+        let Some(_in_flight_guard) = WarmupAccountInFlightGuard::try_acquire(&target.account.id)
+        else {
+            results.push(AccountWarmupItemResult {
+                account_id: target.account.id,
+                account_name: target.account.label,
+                ok: false,
+                message: "warmup already in progress for this account".to_string(),
+            });
+            continue;
+        };
         let client = match build_warmup_client_for_account(&target.account.id) {
             Ok(client) => client,
             Err(err) => {
@@ -98,6 +152,101 @@ pub(crate) fn warmup_accounts(
         failed: results.len().saturating_sub(succeeded),
         results,
     })
+}
+
+pub(crate) fn enqueue_auto_warmup_for_account(account_id: &str, reason: &str) -> bool {
+    let id = account_id.trim();
+    if id.is_empty() || !mark_auto_warmup_task_pending(id) {
+        return false;
+    }
+
+    try_enqueue_auto_warmup_task(
+        auto_warmup_queue_sender(),
+        AutoWarmupTask {
+            account_id: id.to_string(),
+            reason: reason.trim().to_string(),
+        },
+    )
+}
+
+fn auto_warmup_queue_sender() -> &'static SyncSender<AutoWarmupTask> {
+    AUTO_WARMUP_QUEUE.get_or_init(|| {
+        let (sender, receiver) = sync_channel(AUTO_WARMUP_QUEUE_CAPACITY);
+        if let Err(err) = thread::Builder::new()
+            .name("account-auto-warmup-worker".to_string())
+            .spawn(move || auto_warmup_worker(receiver))
+        {
+            log::error!("spawn auto account warmup worker failed: {err}");
+        }
+        sender
+    })
+}
+
+fn try_enqueue_auto_warmup_task(sender: &SyncSender<AutoWarmupTask>, task: AutoWarmupTask) -> bool {
+    match sender.try_send(task) {
+        Ok(()) => true,
+        Err(TrySendError::Full(task)) => {
+            clear_auto_warmup_task_pending(&task.account_id);
+            log::warn!(
+                "auto account warmup queue full: account_id={} reason={}",
+                task.account_id,
+                task.reason
+            );
+            false
+        }
+        Err(TrySendError::Disconnected(task)) => {
+            clear_auto_warmup_task_pending(&task.account_id);
+            log::warn!(
+                "auto account warmup queue unavailable: account_id={} reason={}",
+                task.account_id,
+                task.reason
+            );
+            false
+        }
+    }
+}
+
+fn auto_warmup_worker(receiver: Receiver<AutoWarmupTask>) {
+    while let Ok(task) = receiver.recv() {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            warmup_accounts(vec![task.account_id.clone()], DEFAULT_WARMUP_MESSAGE)
+        }));
+        match outcome {
+            Ok(Ok(result)) => log::info!(
+                "auto account warmup completed: account_id={} reason={} succeeded={} failed={}",
+                task.account_id,
+                task.reason,
+                result.succeeded,
+                result.failed
+            ),
+            Ok(Err(err)) => log::warn!(
+                "auto account warmup failed: account_id={} reason={} err={}",
+                task.account_id,
+                task.reason,
+                err
+            ),
+            Err(_) => log::error!(
+                "auto account warmup panicked: account_id={} reason={}",
+                task.account_id,
+                task.reason
+            ),
+        }
+        clear_auto_warmup_task_pending(&task.account_id);
+    }
+}
+
+fn mark_auto_warmup_task_pending(account_id: &str) -> bool {
+    let mutex = PENDING_AUTO_WARMUP_TASKS.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut pending = crate::lock_utils::lock_recover(mutex, "pending_auto_warmup_tasks");
+    pending.insert(account_id.to_string())
+}
+
+fn clear_auto_warmup_task_pending(account_id: &str) {
+    let Some(mutex) = PENDING_AUTO_WARMUP_TASKS.get() else {
+        return;
+    };
+    let mut pending = crate::lock_utils::lock_recover(mutex, "pending_auto_warmup_tasks");
+    pending.remove(account_id);
 }
 
 fn resolve_target_accounts(
@@ -340,6 +489,7 @@ fn send_warmup_request(
         .post(WARMUP_UPSTREAM_URL)
         .headers(headers)
         .json(&body)
+        .timeout(WARMUP_REQUEST_TIMEOUT)
         .send()
         .map_err(|err| format!("warmup request failed: {err}"))?;
 

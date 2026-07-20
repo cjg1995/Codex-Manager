@@ -23,6 +23,7 @@ export interface BackgroundTaskSettings {
   httpWorkerMin: number;
   httpStreamWorkerFactor: number;
   httpStreamWorkerMin: number;
+  autoWarmupAfterQuotaRefreshEnabled: boolean;
   warmupCronEnabled: boolean;
   warmupCronExpression: string;
 }

@@ -196,6 +196,10 @@ fn run_usage_future<F>(future: F) -> F::Output
 where
     F: Future,
 {
+    // The gateway's cold-start path also builds the shared blocking client.
+    // Initialize it before entering Tokio so reqwest never drops its blocking
+    // runtime from within an async context.
+    crate::gateway::ensure_runtime_config_loaded();
     usage_http_runtime().block_on(future)
 }
 
@@ -985,6 +989,11 @@ fn current_upstream_proxy_url() -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+        .or_else(|| {
+            crate::runtime::process_env::default_proxy_url_for(
+                "https://chatgpt.com/backend-api/wham/usage",
+            )
+        })
 }
 
 /// 函数 `fetch_usage_snapshot`

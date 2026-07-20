@@ -55,6 +55,7 @@ static HTTP_WORKER_FACTOR: AtomicUsize = AtomicUsize::new(DEFAULT_HTTP_WORKER_FA
 static HTTP_WORKER_MIN: AtomicUsize = AtomicUsize::new(DEFAULT_HTTP_WORKER_MIN);
 static HTTP_STREAM_WORKER_FACTOR: AtomicUsize = AtomicUsize::new(DEFAULT_HTTP_STREAM_WORKER_FACTOR);
 static HTTP_STREAM_WORKER_MIN: AtomicUsize = AtomicUsize::new(DEFAULT_HTTP_STREAM_WORKER_MIN);
+static AUTO_WARMUP_AFTER_QUOTA_REFRESH_ENABLED: AtomicBool = AtomicBool::new(false);
 static WARMUP_CRON_ENABLED: AtomicBool = AtomicBool::new(false);
 static WARMUP_CRON_EXPRESSION: OnceLock<Mutex<String>> = OnceLock::new();
 
@@ -69,6 +70,8 @@ const ENV_GATEWAY_KEEPALIVE_ENABLED: &str = "CODEXMANAGER_GATEWAY_KEEPALIVE_ENAB
 const ENV_GATEWAY_KEEPALIVE_INTERVAL_SECS: &str = "CODEXMANAGER_GATEWAY_KEEPALIVE_INTERVAL_SECS";
 const ENV_TOKEN_REFRESH_POLLING_ENABLED: &str = "CODEXMANAGER_TOKEN_REFRESH_POLLING_ENABLED";
 const ENV_TOKEN_REFRESH_POLL_INTERVAL_SECS: &str = "CODEXMANAGER_TOKEN_REFRESH_POLL_INTERVAL_SECS";
+const ENV_AUTO_WARMUP_AFTER_QUOTA_REFRESH_ENABLED: &str =
+    "CODEXMANAGER_AUTO_WARMUP_AFTER_QUOTA_REFRESH_ENABLED";
 const ENV_WARMUP_CRON_ENABLED: &str = "CODEXMANAGER_WARMUP_CRON_ENABLED";
 const ENV_WARMUP_CRON_EXPRESSION: &str = "CODEXMANAGER_WARMUP_CRON_EXPRESSION";
 const ENV_TOKEN_REFRESH_BATCH_LIMIT: &str = "CODEXMANAGER_TOKEN_REFRESH_BATCH_LIMIT";
@@ -171,9 +174,9 @@ use self::runner::{
 };
 use self::settings::ensure_background_tasks_config_loaded;
 pub(crate) use self::settings::{
-    background_tasks_settings, reload_background_tasks_runtime_from_env,
-    set_background_tasks_settings, validate_background_tasks_settings_patch,
-    BackgroundTasksSettingsPatch,
+    auto_warmup_after_quota_refresh_enabled, background_tasks_settings,
+    reload_background_tasks_runtime_from_env, set_background_tasks_settings,
+    validate_background_tasks_settings_patch, BackgroundTasksSettingsPatch,
 };
 
 pub fn set_usage_refresh_completed_handler<F>(handler: F)

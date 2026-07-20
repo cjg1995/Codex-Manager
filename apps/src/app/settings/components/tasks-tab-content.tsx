@@ -152,6 +152,22 @@ export function TasksTabContent({
               </div>
             </div>
           ))}
+          <div className="flex items-center justify-between gap-4 rounded-lg bg-accent/20 p-3">
+            <div className="grid gap-1">
+              <Label>{t("额度刷新自动预热")}</Label>
+              <p className="text-xs leading-5 text-muted-foreground">
+                {t("检测到账号 5 小时或 7 天额度窗口刷新后，自动向该账号发送一次预热消息。")}
+              </p>
+            </div>
+            <Switch
+              checked={snapshot.backgroundTasks.autoWarmupAfterQuotaRefreshEnabled}
+              onCheckedChange={(value) =>
+                updateBackgroundTasks({
+                  autoWarmupAfterQuotaRefreshEnabled: value,
+                })
+              }
+            />
+          </div>
           <div className="grid gap-3 rounded-lg bg-accent/20 p-3 lg:grid-cols-[minmax(180px,240px)_minmax(180px,1fr)] lg:items-end">
             <div className="flex items-center gap-3 lg:self-center">
               <Switch

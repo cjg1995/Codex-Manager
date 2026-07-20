@@ -3,6 +3,18 @@
 import type { MessageCatalog } from "../types";
 
 export const KO_ACCOUNTS_MESSAGES: MessageCatalog = {
+  "Codex 运行账号": "Codex 실행 계정",
+  "运行中": "사용 중",
+  "切换": "전환",
+  "当前服务的 Codex profile 正在使用此账号":
+    "현재 서비스의 Codex 프로필이 이 계정을 사용하고 있습니다.",
+  "切换 Codex profile 到此账号": "Codex 프로필을 이 계정으로 전환",
+  "服务未连接，暂时无法切换 Codex 账号":
+    "서비스 연결이 끊겨 현재 Codex 계정을 전환할 수 없습니다.",
+  "Codex profile 当前不可写": "현재 Codex 프로필에 쓸 수 없습니다.",
+  "该账号当前不可用于 Codex 直连":
+    "이 계정은 현재 Codex 직접 연결에 사용할 수 없습니다.",
+  "正在切换 Codex 运行账号": "Codex 실행 계정을 전환하는 중...",
   "为当前账号选择独立代理配置": "이 계정에 사용할 전용 프록시 프로필 선택",
   "代理": "프록시",
   "代理配置": "프록시 프로필",

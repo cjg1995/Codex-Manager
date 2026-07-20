@@ -78,6 +78,7 @@ const DEFAULT_CODEX_IMAGE_GENERATION_AUTO_INJECT_TOOL: bool = false;
 const DEFAULT_REQUEST_GATE_WAIT_TIMEOUT_MS: u64 = 0;
 const DEFAULT_TRACE_BODY_PREVIEW_MAX_BYTES: usize = 0;
 const DEFAULT_FRONT_PROXY_MAX_BODY_BYTES: usize = 0;
+const DEFAULT_UPSTREAM_PROXY_TARGET_URL: &str = "https://chatgpt.com";
 const DEFAULT_FREE_ACCOUNT_MAX_MODEL: &str = "auto";
 const DEFAULT_COMPACT_MODEL: &str = "auto";
 const DEFAULT_COMPACT_API_PATH: &str = "/v1/responses/compact";
@@ -374,7 +375,9 @@ pub(crate) fn upstream_proxy_url_for_account(account_id: &str) -> Option<String>
     if let Some(proxy_url) = pool.proxy_for_account(account_id) {
         return Some(proxy_url.to_string());
     }
-    current_upstream_proxy_url()
+    current_upstream_proxy_url().or_else(|| {
+        crate::runtime::process_env::default_proxy_url_for(DEFAULT_UPSTREAM_PROXY_TARGET_URL)
+    })
 }
 
 pub(crate) fn upstream_client_for_aggregate_api_candidate(
@@ -411,9 +414,12 @@ fn account_candidate_clients_for_account(account_id: &str) -> AccountCandidateCl
         return clients;
     }
 
+    let proxy_url = key.proxy_profile.clone().or_else(|| {
+        crate::runtime::process_env::default_proxy_url_for(DEFAULT_UPSTREAM_PROXY_TARGET_URL)
+    });
     let clients = AccountCandidateClients {
-        blocking: build_upstream_client_with_proxy(key.proxy_profile.as_deref()),
-        async_client: build_async_upstream_client_with_proxy(key.proxy_profile.as_deref()),
+        blocking: build_upstream_client_with_proxy(proxy_url.as_deref()),
+        async_client: build_async_upstream_client_with_proxy(proxy_url.as_deref()),
     };
     let mut cache = crate::lock_utils::write_recover(
         account_candidate_clients_lock(),
@@ -508,12 +514,12 @@ pub(crate) fn current_upstream_connect_timeout() -> Duration {
 /// # 返回
 /// 返回函数执行结果
 fn build_upstream_client() -> Client {
-    let proxy_url = current_upstream_proxy_url();
+    let proxy_url = effective_upstream_proxy_url();
     build_upstream_client_with_proxy(proxy_url.as_deref())
 }
 
 fn build_async_upstream_client() -> reqwest::Client {
-    let proxy_url = current_upstream_proxy_url();
+    let proxy_url = effective_upstream_proxy_url();
     build_async_upstream_client_with_proxy(proxy_url.as_deref())
 }
 
@@ -535,11 +541,29 @@ fn build_direct_upstream_client() -> Client {
         })
 }
 
+fn build_direct_async_upstream_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(upstream_connect_timeout_cached())
+        .pool_max_idle_per_host(32)
+        .pool_idle_timeout(Some(Duration::from_secs(90)))
+        .tcp_keepalive(Some(Duration::from_secs(30)))
+        .build()
+        .unwrap_or_else(|err| {
+            log::warn!(
+                "event=gateway_direct_async_upstream_client_build_failed err={}",
+                err
+            );
+            reqwest::Client::new()
+        })
+}
+
 pub(crate) fn apply_blocking_upstream_proxy(
     mut builder: reqwest::blocking::ClientBuilder,
     proxy_url: Option<&str>,
     invalid_event: &str,
 ) -> reqwest::blocking::ClientBuilder {
+    builder = builder.no_proxy();
     if let Some(proxy_url) = proxy_url.map(str::trim).filter(|value| !value.is_empty()) {
         match Proxy::all(proxy_url) {
             Ok(proxy) => {
@@ -558,6 +582,7 @@ pub(crate) fn apply_async_upstream_proxy(
     proxy_url: Option<&str>,
     invalid_event: &str,
 ) -> reqwest::ClientBuilder {
+    builder = builder.no_proxy();
     if let Some(proxy_url) = proxy_url.map(str::trim).filter(|value| !value.is_empty()) {
         match Proxy::all(proxy_url) {
             Ok(proxy) => {
@@ -573,6 +598,7 @@ pub(crate) fn apply_async_upstream_proxy(
 
 fn build_blocking_client_with_proxy_strict(proxy_url: Option<&str>) -> Result<Client, String> {
     let mut builder = Client::builder()
+        .no_proxy()
         .timeout(None::<Duration>)
         .connect_timeout(upstream_connect_timeout_cached())
         .pool_max_idle_per_host(32)
@@ -591,6 +617,7 @@ fn build_async_client_with_proxy_strict(
     proxy_url: Option<&str>,
 ) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
+        .no_proxy()
         .connect_timeout(upstream_connect_timeout_cached())
         .pool_max_idle_per_host(32)
         .pool_idle_timeout(Some(Duration::from_secs(90)))
@@ -620,6 +647,7 @@ fn build_upstream_client_with_proxy(proxy_url: Option<&str>) -> Client {
     UPSTREAM_CLIENT_BUILD_COUNT.fetch_add(1, Ordering::SeqCst);
 
     let mut builder = Client::builder()
+        .no_proxy()
         // 中文注释：显式关闭总超时，避免长时流式响应在客户端层被误判超时中断。
         .timeout(None::<Duration>)
         // 中文注释：连接阶段设置超时，避免网络异常时线程长期卡死占满并发槽位。
@@ -632,18 +660,20 @@ fn build_upstream_client_with_proxy(proxy_url: Option<&str>) -> Client {
             Ok(proxy) => proxy,
             Err(err) => {
                 log::warn!(
-                    "event=gateway_proxy_pool_invalid_proxy proxy={} err={}",
-                    proxy_url,
+                    "event=gateway_proxy_pool_invalid_proxy action=direct_fallback err={}",
                     err
                 );
-                return build_upstream_client();
+                return build_direct_upstream_client();
             }
         };
         builder = builder.proxy(proxy);
     }
     builder.build().unwrap_or_else(|err| {
-        log::warn!("event=gateway_upstream_client_build_failed err={}", err);
-        Client::new()
+        log::warn!(
+            "event=gateway_upstream_client_build_failed action=direct_fallback err={}",
+            err
+        );
+        build_direct_upstream_client()
     })
 }
 
@@ -652,6 +682,7 @@ fn build_async_upstream_client_with_proxy(proxy_url: Option<&str>) -> reqwest::C
     ASYNC_UPSTREAM_CLIENT_BUILD_COUNT.fetch_add(1, Ordering::SeqCst);
 
     let mut builder = reqwest::Client::builder()
+        .no_proxy()
         .connect_timeout(upstream_connect_timeout_cached())
         .pool_max_idle_per_host(32)
         .pool_idle_timeout(Some(Duration::from_secs(90)))
@@ -661,21 +692,20 @@ fn build_async_upstream_client_with_proxy(proxy_url: Option<&str>) -> reqwest::C
             Ok(proxy) => proxy,
             Err(err) => {
                 log::warn!(
-                    "event=gateway_proxy_pool_invalid_proxy proxy={} err={}",
-                    proxy_url,
+                    "event=gateway_proxy_pool_invalid_proxy action=direct_fallback err={}",
                     err
                 );
-                return build_async_upstream_client();
+                return build_direct_async_upstream_client();
             }
         };
         builder = builder.proxy(proxy);
     }
     builder.build().unwrap_or_else(|err| {
         log::warn!(
-            "event=gateway_async_upstream_client_build_failed err={}",
+            "event=gateway_async_upstream_client_build_failed action=direct_fallback err={}",
             err
         );
-        reqwest::Client::new()
+        build_direct_async_upstream_client()
     })
 }
 
@@ -1676,7 +1706,7 @@ pub(super) fn reload_from_env() {
 ///
 /// # 返回
 /// 无
-fn ensure_runtime_config_loaded() {
+pub(crate) fn ensure_runtime_config_loaded() {
     let _ = RUNTIME_CONFIG_LOADED.get_or_init(|| reload_from_env());
 }
 
@@ -2073,6 +2103,12 @@ fn residency_requirement_cell() -> &'static RwLock<Option<String>> {
 /// 返回函数执行结果
 fn current_upstream_proxy_url() -> Option<String> {
     crate::lock_utils::read_recover(upstream_proxy_url_cell(), "upstream_proxy_url").clone()
+}
+
+fn effective_upstream_proxy_url() -> Option<String> {
+    current_upstream_proxy_url().or_else(|| {
+        crate::runtime::process_env::default_proxy_url_for(DEFAULT_UPSTREAM_PROXY_TARGET_URL)
+    })
 }
 
 fn account_proxy_client_cache_entry(account_id: &str) -> AccountProxyClientCacheEntry {

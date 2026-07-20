@@ -40,6 +40,7 @@ const ISOLATED_RUNTIME_ENV_KEYS: &[&str] = &[
     "CODEXMANAGER_GATEWAY_KEEPALIVE_INTERVAL_SECS",
     "CODEXMANAGER_TOKEN_REFRESH_POLLING_ENABLED",
     "CODEXMANAGER_TOKEN_REFRESH_POLL_INTERVAL_SECS",
+    "CODEXMANAGER_AUTO_WARMUP_AFTER_QUOTA_REFRESH_ENABLED",
     "CODEXMANAGER_TOKEN_REFRESH_AHEAD_SECS",
     "CODEXMANAGER_USAGE_REFRESH_WORKERS",
     "CODEXMANAGER_HTTP_WORKER_FACTOR",
@@ -110,6 +111,7 @@ fn reset_runtime_defaults() {
             "gatewayKeepaliveIntervalSecs": 180,
             "tokenRefreshPollingEnabled": true,
             "tokenRefreshPollIntervalSecs": 60,
+            "autoWarmupAfterQuotaRefreshEnabled": false,
             "usageRefreshWorkers": 4,
             "httpWorkerFactor": 4,
             "httpWorkerMin": 8,
@@ -1212,6 +1214,7 @@ fn sync_runtime_settings_from_storage_applies_saved_runtime_values() {
                     "gatewayKeepaliveIntervalSecs": 180,
                     "tokenRefreshPollingEnabled": true,
                     "tokenRefreshPollIntervalSecs": 60,
+                    "autoWarmupAfterQuotaRefreshEnabled": true,
                     "usageRefreshWorkers": 4,
                     "httpWorkerFactor": 4,
                     "httpWorkerMin": 8,
@@ -1319,6 +1322,13 @@ fn sync_runtime_settings_from_storage_applies_saved_runtime_values() {
                 .and_then(|value| value.get("usagePollIntervalSecs"))
                 .and_then(|value| value.as_u64()),
             Some(777)
+        );
+        assert_eq!(
+            snapshot
+                .get("backgroundTasks")
+                .and_then(|value| value.get("autoWarmupAfterQuotaRefreshEnabled"))
+                .and_then(|value| value.as_bool()),
+            Some(true)
         );
         assert_eq!(
             snapshot

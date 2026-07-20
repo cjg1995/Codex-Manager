@@ -69,6 +69,7 @@ const DEFAULT_BACKGROUND_TASKS: BackgroundTaskSettings = {
   httpWorkerMin: 8,
   httpStreamWorkerFactor: 1,
   httpStreamWorkerMin: 2,
+  autoWarmupAfterQuotaRefreshEnabled: false,
   warmupCronEnabled: false,
   warmupCronExpression: "",
 };
@@ -1566,6 +1567,10 @@ export function normalizeBackgroundTasks(payload: unknown): BackgroundTaskSettin
       source.tokenRefreshPollIntervalSecs,
       DEFAULT_BACKGROUND_TASKS.tokenRefreshPollIntervalSecs,
       1
+    ),
+    autoWarmupAfterQuotaRefreshEnabled: asBoolean(
+      source.autoWarmupAfterQuotaRefreshEnabled,
+      DEFAULT_BACKGROUND_TASKS.autoWarmupAfterQuotaRefreshEnabled
     ),
     warmupCronEnabled: asBoolean(
       source.warmupCronEnabled,

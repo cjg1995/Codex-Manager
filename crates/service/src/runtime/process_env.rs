@@ -3,6 +3,8 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::process::Command;
 
 const ENV_CANDIDATES: [&str; 3] = ["codexmanager.env", "CodexManager.env", ".env"];
 const DEFAULT_DB_FILENAME: &str = "codexmanager.db";
@@ -148,6 +150,280 @@ pub(crate) fn load_env_from_exe_dir() {
     if applied > 0 {
         log::info!("Loaded {} env vars from {}", applied, path.display());
     }
+}
+
+/// Resolves a fallback proxy for one target URL. Project-level proxy
+/// configuration must be checked by the caller before using this fallback.
+pub(crate) fn default_proxy_url_for(target_url: &str) -> Option<String> {
+    if proxy_bypass_from_env(target_url) {
+        return None;
+    }
+    proxy_url_from_env().or_else(|| system_proxy_url_for(target_url))
+}
+
+fn proxy_url_from_env() -> Option<String> {
+    [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ]
+    .iter()
+    .find_map(|name| {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| normalize_proxy_candidate(&value))
+    })
+}
+
+fn normalize_proxy_candidate(raw: &str) -> Option<String> {
+    let value = raw.trim().trim_matches('"').trim_matches('\'').trim();
+    if value.is_empty() {
+        return None;
+    }
+    let normalized = if value.contains("://") {
+        value.to_string()
+    } else {
+        format!("http://{value}")
+    };
+    let scheme = normalized
+        .split_once("://")
+        .map(|(scheme, _)| scheme.to_ascii_lowercase())?;
+    if !matches!(
+        scheme.as_str(),
+        "http" | "https" | "socks4" | "socks5" | "socks5h"
+    ) {
+        return None;
+    }
+    reqwest::Proxy::all(&normalized).ok()?;
+    Some(normalized)
+}
+
+#[cfg(windows)]
+fn system_proxy_url_for(target_url: &str) -> Option<String> {
+    if !windows_proxy_enabled() {
+        return None;
+    }
+    if query_windows_internet_setting("ProxyOverride")
+        .as_deref()
+        .is_some_and(|rules| proxy_bypass_matches_target(target_url, rules))
+    {
+        return None;
+    }
+    query_windows_internet_setting("ProxyServer")
+        .as_deref()
+        .and_then(parse_windows_proxy_server)
+}
+
+#[cfg(not(windows))]
+fn system_proxy_url_for(_target_url: &str) -> Option<String> {
+    None
+}
+
+fn proxy_bypass_from_env(target_url: &str) -> bool {
+    ["NO_PROXY", "no_proxy"].iter().any(|name| {
+        std::env::var(name)
+            .ok()
+            .is_some_and(|rules| proxy_bypass_matches_target(target_url, &rules))
+    })
+}
+
+#[cfg(windows)]
+fn windows_proxy_enabled() -> bool {
+    query_windows_internet_setting("ProxyEnable")
+        .as_deref()
+        .is_some_and(parse_windows_proxy_enabled)
+}
+
+#[cfg(windows)]
+fn query_windows_internet_setting(name: &str) -> Option<String> {
+    let output = Command::new("reg")
+        .args([
+            "query",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            "/v",
+            name,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_reg_query_value(&String::from_utf8_lossy(&output.stdout), name)
+}
+
+#[cfg(windows)]
+fn parse_reg_query_value(output: &str, name: &str) -> Option<String> {
+    let normalized_name = name.to_ascii_lowercase();
+    output.lines().find_map(|line| {
+        let trimmed = line.trim();
+        if !trimmed.to_ascii_lowercase().starts_with(&normalized_name) {
+            return None;
+        }
+        let parts = trimmed.split_whitespace().collect::<Vec<_>>();
+        (parts.len() >= 3).then(|| parts[2..].join(" "))
+    })
+}
+
+#[cfg(windows)]
+fn parse_windows_proxy_enabled(raw: &str) -> bool {
+    let value = raw.trim();
+    if value.eq_ignore_ascii_case("true") {
+        return true;
+    }
+    if let Some(hex) = value.strip_prefix("0x") {
+        return u32::from_str_radix(hex, 16).is_ok_and(|parsed| parsed != 0);
+    }
+    value.parse::<u32>().is_ok_and(|parsed| parsed != 0)
+}
+
+fn parse_windows_proxy_server(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if !value.contains('=') {
+        return normalize_proxy_candidate(value);
+    }
+
+    let mut http_proxy = None;
+    let mut socks_proxy = None;
+    for part in value.split(';') {
+        let Some((scheme, target)) = part.split_once('=') else {
+            continue;
+        };
+        let scheme = scheme.trim().to_ascii_lowercase();
+        let target = target.trim();
+        if target.is_empty() {
+            continue;
+        }
+        match scheme.as_str() {
+            "https" => return normalize_proxy_candidate(target),
+            "http" => http_proxy = normalize_proxy_candidate(target),
+            "socks" | "socks5" => {
+                socks_proxy = if target.contains("://") {
+                    normalize_proxy_candidate(target)
+                } else {
+                    Some(format!("socks5h://{target}"))
+                };
+            }
+            _ => {}
+        }
+    }
+    http_proxy.or(socks_proxy)
+}
+
+fn proxy_bypass_matches_target(target_url: &str, raw_rules: &str) -> bool {
+    let Some((host, port)) = target_host_and_port(target_url) else {
+        return false;
+    };
+    raw_rules
+        .split([',', ';'])
+        .map(str::trim)
+        .filter(|rule| !rule.is_empty())
+        .any(|rule| proxy_bypass_rule_matches(rule, &host, port))
+}
+
+fn target_host_and_port(target_url: &str) -> Option<(String, Option<u16>)> {
+    let parsed = url::Url::parse(target_url)
+        .or_else(|_| url::Url::parse(&format!("https://{}", target_url.trim_start_matches('/'))));
+    let parsed = parsed.ok()?;
+    Some((
+        parsed
+            .host_str()?
+            .trim_matches(|ch| matches!(ch, '[' | ']'))
+            .to_ascii_lowercase(),
+        parsed.port_or_known_default(),
+    ))
+}
+
+fn proxy_bypass_rule_matches(rule: &str, host: &str, target_port: Option<u16>) -> bool {
+    let rule = rule.trim().trim_matches('"').trim_matches('\'').trim();
+    if rule == "*" {
+        return true;
+    }
+    if rule.eq_ignore_ascii_case("<local>") {
+        return is_local_host(host);
+    }
+
+    let authority = rule
+        .split_once("://")
+        .map(|(_, value)| value)
+        .unwrap_or(rule)
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .trim();
+    let (host_pattern, rule_port) = split_proxy_bypass_host_port(authority);
+    if rule_port.is_some() && rule_port != target_port {
+        return false;
+    }
+    let host_pattern = host_pattern
+        .trim_matches(|ch| matches!(ch, '[' | ']' | '.'))
+        .to_ascii_lowercase();
+    if host_pattern.is_empty() {
+        return false;
+    }
+    if host_pattern.contains('*') {
+        return wildcard_matches(&host_pattern, host);
+    }
+    host == host_pattern || host.ends_with(&format!(".{host_pattern}"))
+}
+
+fn split_proxy_bypass_host_port(authority: &str) -> (&str, Option<u16>) {
+    if authority.starts_with('[') {
+        if let Some(end) = authority.find(']') {
+            let host = &authority[1..end];
+            let port = authority[end + 1..]
+                .strip_prefix(':')
+                .and_then(|value| value.parse().ok());
+            return (host, port);
+        }
+    }
+    match authority.rsplit_once(':') {
+        Some((host, port)) if !host.contains(':') => match port.parse::<u16>() {
+            Ok(port) => (host, Some(port)),
+            Err(_) => (authority, None),
+        },
+        _ => (authority, None),
+    }
+}
+
+fn is_local_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || !host.contains('.')
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+fn wildcard_matches(pattern: &str, value: &str) -> bool {
+    let (mut pattern_index, mut value_index) = (0usize, 0usize);
+    let (mut star_index, mut star_value_index) = (None, 0usize);
+    let pattern = pattern.as_bytes();
+    let value = value.as_bytes();
+    while value_index < value.len() {
+        if pattern_index < pattern.len() && pattern[pattern_index] == value[value_index] {
+            pattern_index += 1;
+            value_index += 1;
+        } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+            star_index = Some(pattern_index);
+            pattern_index += 1;
+            star_value_index = value_index;
+        } else if let Some(star) = star_index {
+            pattern_index = star + 1;
+            star_value_index += 1;
+            value_index = star_value_index;
+        } else {
+            return false;
+        }
+    }
+    while pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+        pattern_index += 1;
+    }
+    pattern_index == pattern.len()
 }
 
 /// 函数 `resolve_path_with_base`

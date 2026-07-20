@@ -3,6 +3,7 @@
 import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useAccounts } from "@/hooks/useAccounts";
+import { useAccountCodexProfileSwitch } from "@/hooks/useAccountCodexProfileSwitch";
 import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
 import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
@@ -97,6 +98,9 @@ export default function AccountsPage() {
     isUpdatingStatusAccountId,
   } = useAccounts();
   const isPageActive = useDesktopPageActive("/accounts/");
+  const codexProfileSwitch = useAccountCodexProfileSwitch({
+    enabled: isPageActive,
+  });
   usePageTransitionReady("/accounts/", !isServiceReady || !isLoading);
 
   const [search, setSearch] = useState("");
@@ -810,6 +814,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
       isReorderingAccounts={isReorderingAccounts}
       isUpdatingProfileAccountId={isUpdatingProfileAccountId}
       isUpdatingStatusAccountId={isUpdatingStatusAccountId}
+      codexProfileSwitch={codexProfileSwitch}
       statusFilterOptions={statusFilterOptions}
       importFileActionLabel={importFileActionLabel}
       importDirectoryActionLabel={importDirectoryActionLabel}

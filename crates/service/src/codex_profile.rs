@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{value as toml_value, DocumentMut, Item, Table};
@@ -39,6 +40,8 @@ const ENV_HOME: &str = "HOME";
 const ENV_USERPROFILE: &str = "USERPROFILE";
 const ENV_HOMEDRIVE: &str = "HOMEDRIVE";
 const ENV_HOMEPATH: &str = "HOMEPATH";
+
+static CODEX_PROFILE_OPERATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -224,18 +227,22 @@ struct DetectedGatewayConfig {
 }
 
 pub(crate) fn get_status(codex_home: Option<&str>) -> Result<CodexProfileStatus, String> {
-    let profile_dir = resolve_profile_dir(codex_home)?;
-    status_for_profile(&profile_dir)
+    with_codex_profile_operation_lock(|| {
+        let profile_dir = resolve_profile_dir(codex_home)?;
+        status_for_profile(&profile_dir)
+    })
 }
 
 pub(crate) fn set_config(codex_home: Option<&str>) -> Result<CodexProfileStatus, String> {
-    let profile_dir = resolve_profile_dir(codex_home)?;
-    ensure_profile_dir_valid(&profile_dir)?;
-    crate::app_settings::save_persisted_app_setting(
-        APP_SETTING_CODEX_HOME_KEY,
-        Some(&profile_dir.to_string_lossy()),
-    )?;
-    status_for_profile(&profile_dir)
+    with_codex_profile_operation_lock(|| {
+        let profile_dir = resolve_profile_dir(codex_home)?;
+        ensure_profile_dir_valid(&profile_dir)?;
+        crate::app_settings::save_persisted_app_setting(
+            APP_SETTING_CODEX_HOME_KEY,
+            Some(&profile_dir.to_string_lossy()),
+        )?;
+        status_for_profile(&profile_dir)
+    })
 }
 
 pub(crate) fn list_candidates() -> Result<CodexProfileCandidates, String> {
@@ -292,10 +299,6 @@ pub(crate) fn apply_direct_account(
     codex_home: Option<&str>,
 ) -> Result<CodexProfileStatus, String> {
     let account_id = normalize_required(account_id, "missing accountId")?;
-    let profile_dir = resolve_profile_dir(codex_home)?;
-    ensure_profile_dir_valid(&profile_dir)?;
-    let _ = ensure_managed_profile_migrated(&profile_dir);
-
     let storage = open_storage()?;
     let account = storage
         .find_account_direct_auth_profile_by_id(account_id)
@@ -323,25 +326,30 @@ pub(crate) fn apply_direct_account(
     )?;
     ensure_usable_token(&token)?;
 
-    ensure_backup(&profile_dir)?;
-    let auth_json = build_direct_auth_json(&account, &token)?;
-    let config_toml = patch_config_for_direct(read_optional(&profile_dir.join(CONFIG_FILE))?)?;
-    write_profile_files(
-        &profile_dir,
-        &auth_json,
-        &config_toml,
-        ManagedState {
-            profile_dir: profile_key(&profile_dir),
-            mode: CodexProfileMode::DirectAccount,
-            account_id: Some(account.id.clone()),
-            api_key_id: None,
-            gateway_base_url: None,
-            provider_id: PROVIDER_ID.to_string(),
-            updated_at: now_ts(),
-        },
-    )?;
-    persist_codex_home(&profile_dir)?;
-    status_for_profile_with_history_repair(&profile_dir, DEFAULT_HISTORY_PROVIDER_ID)
+    with_codex_profile_operation_lock(|| {
+        let profile_dir = resolve_profile_dir(codex_home)?;
+        ensure_profile_dir_valid(&profile_dir)?;
+        let _ = ensure_managed_profile_migrated(&profile_dir);
+        ensure_backup(&profile_dir)?;
+        let auth_json = build_direct_auth_json(&account, &token)?;
+        let config_toml = patch_config_for_direct(read_optional(&profile_dir.join(CONFIG_FILE))?)?;
+        write_profile_files(
+            &profile_dir,
+            &auth_json,
+            &config_toml,
+            ManagedState {
+                profile_dir: profile_key(&profile_dir),
+                mode: CodexProfileMode::DirectAccount,
+                account_id: Some(account.id.clone()),
+                api_key_id: None,
+                gateway_base_url: None,
+                provider_id: PROVIDER_ID.to_string(),
+                updated_at: now_ts(),
+            },
+        )?;
+        persist_codex_home(&profile_dir)?;
+        status_for_profile_with_history_repair(&profile_dir, DEFAULT_HISTORY_PROVIDER_ID)
+    })
 }
 
 pub(crate) fn apply_gateway(
@@ -350,9 +358,6 @@ pub(crate) fn apply_gateway(
     base_url: Option<&str>,
 ) -> Result<CodexProfileStatus, String> {
     let api_key_id = normalize_required(api_key_id, "missing apiKeyId")?;
-    let profile_dir = resolve_profile_dir(codex_home)?;
-    ensure_profile_dir_valid(&profile_dir)?;
-    let _ = ensure_managed_profile_migrated(&profile_dir);
     let gateway_base_url = normalize_gateway_base_url(base_url);
 
     let storage = open_storage()?;
@@ -370,80 +375,100 @@ pub(crate) fn apply_gateway(
         return Err("api key secret is empty".to_string());
     }
 
-    ensure_backup(&profile_dir)?;
-    let auth_json = build_gateway_auth_json(&secret)?;
-    let config_toml = patch_config_for_gateway(
-        read_optional(&profile_dir.join(CONFIG_FILE))?,
-        &gateway_base_url,
-    )?;
-    write_profile_files(
-        &profile_dir,
-        &auth_json,
-        &config_toml,
-        ManagedState {
-            profile_dir: profile_key(&profile_dir),
-            mode: CodexProfileMode::Gateway,
-            account_id: None,
-            api_key_id: Some(gateway_auth.id),
-            gateway_base_url: Some(gateway_base_url),
-            provider_id: PROVIDER_ID.to_string(),
-            updated_at: now_ts(),
-        },
-    )?;
-    persist_codex_home(&profile_dir)?;
-    status_for_profile_with_history_repair(&profile_dir, PROVIDER_ID)
+    with_codex_profile_operation_lock(|| {
+        let profile_dir = resolve_profile_dir(codex_home)?;
+        ensure_profile_dir_valid(&profile_dir)?;
+        let _ = ensure_managed_profile_migrated(&profile_dir);
+        ensure_backup(&profile_dir)?;
+        let auth_json = build_gateway_auth_json(&secret)?;
+        let config_toml = patch_config_for_gateway(
+            read_optional(&profile_dir.join(CONFIG_FILE))?,
+            &gateway_base_url,
+        )?;
+        write_profile_files(
+            &profile_dir,
+            &auth_json,
+            &config_toml,
+            ManagedState {
+                profile_dir: profile_key(&profile_dir),
+                mode: CodexProfileMode::Gateway,
+                account_id: None,
+                api_key_id: Some(gateway_auth.id.clone()),
+                gateway_base_url: Some(gateway_base_url.clone()),
+                provider_id: PROVIDER_ID.to_string(),
+                updated_at: now_ts(),
+            },
+        )?;
+        persist_codex_home(&profile_dir)?;
+        status_for_profile_with_history_repair(&profile_dir, PROVIDER_ID)
+    })
 }
 
 pub(crate) fn restore(codex_home: Option<&str>) -> Result<CodexProfileStatus, String> {
-    let profile_dir = resolve_profile_dir(codex_home)?;
-    let key = profile_key(&profile_dir);
-    let mut backups = load_backups();
-    let backup = backups
-        .remove(&key)
-        .ok_or_else(|| "backup not found for this Codex profile".to_string())?;
+    with_codex_profile_operation_lock(|| {
+        let profile_dir = resolve_profile_dir(codex_home)?;
+        let key = profile_key(&profile_dir);
+        let mut backups = load_backups();
+        let backup = backups
+            .remove(&key)
+            .ok_or_else(|| "backup not found for this Codex profile".to_string())?;
 
-    fs::create_dir_all(&profile_dir).map_err(|err| {
-        format!(
-            "create profile dir failed ({}): {err}",
-            profile_dir.display()
-        )
-    })?;
-    restore_optional_file(&profile_dir.join(AUTH_FILE), backup.auth_json.as_deref())?;
-    restore_optional_file(
-        &profile_dir.join(CONFIG_FILE),
-        backup.config_toml.as_deref(),
-    )?;
-    let paths = managed_profile_paths(&profile_dir)?;
-    remove_file_if_exists(&paths.marker_path)?;
-    remove_file_if_exists(&paths.legacy_marker_path)?;
-    save_backups(&backups)?;
-    if load_state().is_some_and(|state| state.profile_dir == key) {
-        crate::app_settings::save_persisted_app_setting(APP_SETTING_STATE_KEY, None)?;
-    }
-    status_for_profile(&profile_dir)
+        fs::create_dir_all(&profile_dir).map_err(|err| {
+            format!(
+                "create profile dir failed ({}): {err}",
+                profile_dir.display()
+            )
+        })?;
+        restore_optional_file(&profile_dir.join(AUTH_FILE), backup.auth_json.as_deref())?;
+        restore_optional_file(
+            &profile_dir.join(CONFIG_FILE),
+            backup.config_toml.as_deref(),
+        )?;
+        let paths = managed_profile_paths(&profile_dir)?;
+        remove_file_if_exists(&paths.marker_path)?;
+        remove_file_if_exists(&paths.legacy_marker_path)?;
+        save_backups(&backups)?;
+        if load_state().is_some_and(|state| state.profile_dir == key) {
+            crate::app_settings::save_persisted_app_setting(APP_SETTING_STATE_KEY, None)?;
+        }
+        status_for_profile(&profile_dir)
+    })
 }
 
 pub(crate) fn repair_history(
     codex_home: Option<&str>,
 ) -> Result<CodexProfileHistoryRepairSummary, String> {
-    let profile_dir = resolve_profile_dir(codex_home)?;
-    ensure_profile_dir_valid(&profile_dir)?;
-    let migration_warnings = ensure_managed_profile_migrated(&profile_dir);
-    let target_provider = target_history_provider_for_profile(&profile_dir)?;
-    let mut summary = repair_history_for_provider(&profile_dir, &target_provider);
-    summary.warnings.extend(migration_warnings);
-    Ok(summary)
+    with_codex_profile_operation_lock(|| {
+        let profile_dir = resolve_profile_dir(codex_home)?;
+        ensure_profile_dir_valid(&profile_dir)?;
+        let migration_warnings = ensure_managed_profile_migrated(&profile_dir);
+        let target_provider = target_history_provider_for_profile(&profile_dir)?;
+        let mut summary = repair_history_for_provider(&profile_dir, &target_provider);
+        summary.warnings.extend(migration_warnings);
+        Ok(summary)
+    })
 }
 
 pub(crate) fn prune_history_backups(
     codex_home: Option<&str>,
 ) -> Result<CodexProfilePruneHistoryBackupsResult, String> {
-    let profile_dir = resolve_profile_dir(codex_home)?;
-    ensure_profile_dir_valid(&profile_dir)?;
-    let mut warnings = ensure_managed_profile_migrated(&profile_dir);
-    let mut result = prune_history_backups_for_profile(&profile_dir)?;
-    result.warnings.append(&mut warnings);
-    Ok(result)
+    with_codex_profile_operation_lock(|| {
+        let profile_dir = resolve_profile_dir(codex_home)?;
+        ensure_profile_dir_valid(&profile_dir)?;
+        let mut warnings = ensure_managed_profile_migrated(&profile_dir);
+        let mut result = prune_history_backups_for_profile(&profile_dir)?;
+        result.warnings.append(&mut warnings);
+        Ok(result)
+    })
+}
+
+fn with_codex_profile_operation_lock<T>(operation: impl FnOnce() -> T) -> T {
+    // Public profile operations acquire this lock exactly once. Internal status
+    // and history helpers stay lock-free so callers can safely read the final
+    // state before releasing the transaction guard.
+    let mutex = CODEX_PROFILE_OPERATION_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = crate::lock_utils::lock_recover(mutex, "codex_profile_operation");
+    operation()
 }
 
 fn open_storage() -> Result<crate::storage_helpers::StorageHandle, String> {

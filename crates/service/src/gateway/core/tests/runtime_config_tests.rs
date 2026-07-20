@@ -8,6 +8,25 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
+#[test]
+fn invalid_non_strict_proxy_falls_back_direct_without_recursive_rebuild() {
+    let _guard = crate::test_env_guard();
+    let blocking_before = UPSTREAM_CLIENT_BUILD_COUNT.load(Ordering::SeqCst);
+    let async_before = ASYNC_UPSTREAM_CLIENT_BUILD_COUNT.load(Ordering::SeqCst);
+
+    let _blocking = build_upstream_client_with_proxy(Some("://invalid-proxy"));
+    let _async = build_async_upstream_client_with_proxy(Some("://invalid-proxy"));
+
+    assert_eq!(
+        UPSTREAM_CLIENT_BUILD_COUNT.load(Ordering::SeqCst),
+        blocking_before + 1
+    );
+    assert_eq!(
+        ASYNC_UPSTREAM_CLIENT_BUILD_COUNT.load(Ordering::SeqCst),
+        async_before + 1
+    );
+}
+
 struct EnvGuard {
     key: &'static str,
     original: Option<std::ffi::OsString>,
@@ -895,7 +914,10 @@ fn account_proxy_set_and_clear_invalidate_gateway_cache() {
     );
 
     crate::account_proxy::clear_account_proxy_settings("acc-cache").expect("clear proxy");
-    assert_eq!(upstream_proxy_url_for_account("acc-cache"), None);
+    assert_eq!(
+        upstream_proxy_url_for_account("acc-cache"),
+        crate::runtime::process_env::default_proxy_url_for(DEFAULT_UPSTREAM_PROXY_TARGET_URL)
+    );
 }
 
 /// 函数 `set_upstream_stream_timeout_ms_updates_env_and_cache`

@@ -587,6 +587,10 @@ pub(crate) fn current_wire_originator() -> String {
     runtime_config::current_wire_originator()
 }
 
+pub(crate) fn ensure_runtime_config_loaded() {
+    runtime_config::ensure_runtime_config_loaded();
+}
+
 /// 函数 `current_codex_user_agent_version`
 ///
 /// 作者: gaohongshun

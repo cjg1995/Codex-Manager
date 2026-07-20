@@ -3,6 +3,19 @@
 import type { MessageCatalog } from "../types";
 
 export const EN_ACCOUNTS_MESSAGES: MessageCatalog = {
+  "Codex 运行账号": "Codex runtime account",
+  "运行中": "Active",
+  "切换": "Switch",
+  "当前服务的 Codex profile 正在使用此账号":
+    "The current service's Codex profile is using this account.",
+  "切换 Codex profile 到此账号":
+    "Switch the Codex profile to this account",
+  "服务未连接，暂时无法切换 Codex 账号":
+    "The service is disconnected, so the Codex account cannot be switched right now.",
+  "Codex profile 当前不可写": "The Codex profile is not writable.",
+  "该账号当前不可用于 Codex 直连":
+    "This account is not currently available for a direct Codex connection.",
+  "正在切换 Codex 运行账号": "Switching the Codex runtime account...",
   "边缘中继": "Edge relay",
   "代理设置": "Proxy settings",
   "分": "min",

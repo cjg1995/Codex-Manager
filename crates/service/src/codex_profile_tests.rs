@@ -75,6 +75,45 @@ fn test_token(account_id: &str, access_token: &str, refresh_token: &str) -> Toke
     }
 }
 
+#[test]
+fn codex_profile_operation_lock_serializes_concurrent_transactions() {
+    let (first_entered_tx, first_entered_rx) = std::sync::mpsc::channel();
+    let (release_first_tx, release_first_rx) = std::sync::mpsc::channel();
+    let first = std::thread::spawn(move || {
+        with_codex_profile_operation_lock(|| {
+            first_entered_tx.send(()).expect("signal first entry");
+            release_first_rx.recv().expect("wait for first release");
+        });
+    });
+
+    first_entered_rx.recv().expect("first operation entered");
+    let mutex = CODEX_PROFILE_OPERATION_LOCK
+        .get()
+        .expect("profile operation lock initialized");
+    assert!(matches!(
+        mutex.try_lock(),
+        Err(std::sync::TryLockError::WouldBlock)
+    ));
+
+    let (second_entered_tx, second_entered_rx) = std::sync::mpsc::channel();
+    let second = std::thread::spawn(move || {
+        with_codex_profile_operation_lock(|| {
+            second_entered_tx.send(()).expect("signal second entry");
+        });
+    });
+    assert_eq!(
+        second_entered_rx.recv_timeout(std::time::Duration::from_millis(100)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    );
+
+    release_first_tx.send(()).expect("release first operation");
+    second_entered_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("second operation entered after release");
+    first.join().expect("join first operation");
+    second.join().expect("join second operation");
+}
+
 fn write_test_rollout(dir: &Path, thread_id: &str, provider: &str) -> (PathBuf, String) {
     let rollout_dir = dir.join("sessions").join("2026").join("06").join("06");
     fs::create_dir_all(&rollout_dir).expect("mkdir rollout");

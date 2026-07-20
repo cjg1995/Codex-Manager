@@ -4159,9 +4159,9 @@ fn rpc_system_proxy_jobs_flow() {
     let profile_id = result.get("id").unwrap().as_str().unwrap().to_string();
 
     // Запускаем медленный фейковый прокси
-    let (proxy_addr, _rx, proxy_handle) = start_mock_proxy_slow_server(
+    let (proxy_addr, rx, proxy_handle) = start_mock_proxy_slow_server(
         "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n",
-        Duration::from_millis(300),
+        Duration::from_secs(2),
     );
 
     // Обновляем прокси URL на правильный адрес фейкового прокси
@@ -4203,6 +4203,8 @@ fn rpc_system_proxy_jobs_flow() {
     let job_state = job_resp.get("result").expect("job state");
     let status = job_state.get("status").unwrap().as_str().unwrap();
     assert!(status == "queued" || status == "running");
+    rx.recv_timeout(Duration::from_secs(5))
+        .expect("latency job should connect to the mock proxy before cancellation");
 
     // 4. Отменяем джобу
     let cancel_resp = call_rpc(

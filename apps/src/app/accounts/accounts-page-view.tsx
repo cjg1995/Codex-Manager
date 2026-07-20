@@ -80,9 +80,11 @@ import type {
   AccountProxySource,
 } from "@/lib/api/account-client";
 import type { Account, ProxyProfile } from "@/types";
+import { AccountCodexProfileCell } from "@/components/accounts/account-codex-profile-cell";
 import { AccountProxyCell } from "@/components/accounts/account-proxy-cell";
 import { AccountProxyGeoStatusGrid } from "@/components/accounts/account-proxy-status-grid";
 import { AccountProxyStatusHeader } from "@/components/accounts/account-proxy-status-header";
+import type { AccountCodexProfileSwitchState } from "@/hooks/useAccountCodexProfileSwitch";
 import {
   type AccountEditorState,
   type AccountExportMode,
@@ -176,6 +178,7 @@ export interface AccountsPageViewProps {
   isReorderingAccounts: boolean;
   isUpdatingProfileAccountId: string | null;
   isUpdatingStatusAccountId: string | null;
+  codexProfileSwitch: AccountCodexProfileSwitchState;
   statusFilterOptions: StatusFilterOption[];
   importFileActionLabel: string;
   importDirectoryActionLabel: string;
@@ -301,6 +304,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
     isReorderingAccounts,
     isUpdatingProfileAccountId,
     isUpdatingStatusAccountId,
+    codexProfileSwitch,
     statusFilterOptions,
     importFileActionLabel,
     importDirectoryActionLabel,
@@ -834,6 +838,9 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                 <TableHead className="w-[132px]">{t("顺序")}</TableHead>
                 <TableHead className="min-w-[180px]">{t("账号代理")}</TableHead>
                 <TableHead className="w-[112px]">{t("状态")}</TableHead>
+                <TableHead className="w-[132px] text-center">
+                  {t("Codex 运行账号")}
+                </TableHead>
                 <TableHead className="table-sticky-action-head w-[112px] text-center">
                   {t("操作")}
                 </TableHead>
@@ -865,6 +872,9 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                     <TableCell>
                       <Skeleton className="h-6 w-16 rounded-full" />
                     </TableCell>
+                    <TableCell>
+                      <Skeleton className="mx-auto h-7 w-20 rounded-md" />
+                    </TableCell>
                     <TableCell className="table-sticky-action-cell">
                       <Skeleton className="mx-auto h-8 w-24" />
                     </TableCell>
@@ -872,7 +882,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                 ))
               ) : visibleAccounts.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="h-48 text-center">
+                  <TableCell colSpan={8} className="h-48 text-center">
                     <div className="flex flex-col items-center justify-center gap-2 text-muted-foreground">
                       <Search className="h-8 w-8 opacity-20" />
                       <p>{t("未找到符合条件的账号")}</p>
@@ -998,6 +1008,12 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                       </TableCell>
                       <TableCell>
                         <AccountStatusCell account={account} />
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <AccountCodexProfileCell
+                          accountId={account.id}
+                          state={codexProfileSwitch}
+                        />
                       </TableCell>
                       <TableCell className="table-sticky-action-cell">
                         <div className="table-action-cell gap-1">

@@ -141,6 +141,7 @@ export const useAppStore = create<AppState>((set) => ({
       httpWorkerMin: 8,
       httpStreamWorkerFactor: 1,
       httpStreamWorkerMin: 2,
+      autoWarmupAfterQuotaRefreshEnabled: false,
       warmupCronEnabled: false,
       warmupCronExpression: "",
     },

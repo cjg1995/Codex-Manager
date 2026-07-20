@@ -1659,6 +1659,9 @@ export const EN_MESSAGES: MessageCatalog = {
   "关闭后如果所有账号都低于阈值，网关会返回无可用账号。":
     "If disabled and all accounts fall below the threshold, the gateway returns no available account.",
   "请先填写 Cron 表达式": "Fill in the Cron expression first",
+  额度刷新自动预热: "Warm up after quota reset",
+  "检测到账号 5 小时或 7 天额度窗口刷新后，自动向该账号发送一次预热消息。":
+    "Automatically send one warmup message when an account's 5-hour or 7-day quota window resets.",
   定时账号预热: "Scheduled account warmup",
   "Cron 表达式": "Cron expression",
   网关模式: "Gateway mode",
