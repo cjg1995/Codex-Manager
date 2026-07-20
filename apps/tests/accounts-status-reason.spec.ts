@@ -52,9 +52,10 @@ const SETTINGS_SNAPSHOT = {
   appearancePreset: "classic",
 };
 
-test("accounts page shows unavailable status reason and raw reason code", async ({
+test("accounts page shows status reason and keeps compact layout usable", async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 1800, height: 900 });
   await page.route("**/api/runtime**", async (route) => {
     await route.fulfill({
       contentType: "application/json; charset=utf-8",
@@ -110,6 +111,31 @@ test("accounts page shows unavailable status reason and raw reason code", async 
       });
       return;
     }
+    if (method === "codexProfile/get") {
+      await ok({
+        codexHome: "C:\\Users\\Tester\\.codex",
+        authPath: "C:\\Users\\Tester\\.codex\\auth.json",
+        configPath: "C:\\Users\\Tester\\.codex\\config.toml",
+        mode: "direct_account",
+        selectedAccountId: "acct-refresh-reused",
+        profileWritable: true,
+        warnings: [],
+      });
+      return;
+    }
+    if (method === "codexProfile/listCandidates") {
+      await ok({
+        accounts: [
+          {
+            id: "acct-refresh-reused",
+            label: "angiemooreja@hotmail.com",
+            status: "active",
+          },
+        ],
+        apiKeys: [],
+      });
+      return;
+    }
     if (method === "account/list") {
       await ok({
         items: [
@@ -150,6 +176,44 @@ test("accounts page shows unavailable status reason and raw reason code", async 
   await page.goto("/accounts/");
 
   await expect(page.getByRole("heading", { name: "OpenAI 账号池" })).toBeVisible();
+  const headers = page.locator('[data-slot="table-head"]');
+  const accountHeader = headers.filter({ hasText: "账号信息" });
+  const quotaHeader = headers.filter({ hasText: "额度详情" });
+  const orderHeader = headers.filter({ hasText: "顺序" });
+  const switchHeader = headers.filter({ hasText: "Codex 运行账号" });
+  const statusHeader = headers.filter({ hasText: "状态" });
+  const proxyHeader = headers.filter({ hasText: "账号代理" });
+  const actionHeader = headers.filter({ hasText: "操作" });
+  const tableContainer = page.locator('[data-slot="table-container"]').first();
+
+  const expectTableToFit = async () => {
+    const tableMetrics = await tableContainer.evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+    }));
+    expect(tableMetrics.scrollWidth).toBeLessThanOrEqual(
+      tableMetrics.clientWidth + 2,
+    );
+
+    const switchBounds = await switchHeader.boundingBox();
+    const actionBounds = await actionHeader.boundingBox();
+    expect(switchBounds).not.toBeNull();
+    expect(actionBounds).not.toBeNull();
+    expect(switchBounds!.x + switchBounds!.width).toBeLessThanOrEqual(
+      actionBounds!.x + 1,
+    );
+  };
+
+  await expect(accountHeader).toBeVisible();
+  await expect(quotaHeader).toBeVisible();
+  await expect(orderHeader).toBeVisible();
+  await expect(switchHeader).toBeVisible();
+  await expect(statusHeader).toBeVisible();
+  await expect(proxyHeader).toBeVisible();
+  await expect(actionHeader).toBeVisible();
+  await expect(page.getByText("运行中", { exact: true })).toBeVisible();
+  await expectTableToFit();
+
   const reasonText = page.getByText("Refresh Token 已被重复使用，需要重新登录");
   await expect(reasonText).toBeVisible();
 
@@ -157,4 +221,47 @@ test("accounts page shows unavailable status reason and raw reason code", async 
   await expect(
     page.getByText("refresh_token_invalid:refresh_token_reused"),
   ).toBeVisible();
+  await page.mouse.move(0, 0);
+  await page.keyboard.press("Escape");
+
+  await page.setViewportSize({ width: 1536, height: 800 });
+  await expect(accountHeader).toBeVisible();
+  await expect(quotaHeader).toBeVisible();
+  await expect(orderHeader).toBeVisible();
+  await expect(switchHeader).toBeVisible();
+  await expect(statusHeader).toBeHidden();
+  await expect(proxyHeader).toBeHidden();
+  await expect(actionHeader).toBeVisible();
+  await expectTableToFit();
+
+  await page.setViewportSize({ width: 1472, height: 800 });
+  await expect(orderHeader).toBeVisible();
+  await expect(statusHeader).toBeHidden();
+  await expect(proxyHeader).toBeHidden();
+  await expectTableToFit();
+
+  await page.setViewportSize({ width: 1471, height: 800 });
+  await expect(orderHeader).toBeHidden();
+  await expect(statusHeader).toBeHidden();
+  await expect(proxyHeader).toBeHidden();
+  await expectTableToFit();
+
+  await page.setViewportSize({ width: 1100, height: 750 });
+  await expect(accountHeader).toBeVisible();
+  await expect(quotaHeader).toBeVisible();
+  await expect(switchHeader).toBeVisible();
+  await expect(actionHeader).toBeVisible();
+  await expect(orderHeader).toBeHidden();
+  await expect(statusHeader).toBeHidden();
+  await expect(proxyHeader).toBeHidden();
+  await expectTableToFit();
+
+  const moreActionsButton = page.getByRole("button", { name: "更多账号操作" });
+  await expect(moreActionsButton).toHaveCount(1);
+  await moreActionsButton.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("menuitem", { name: "编辑账号信息" })).toBeEnabled();
+  await expect(page.getByRole("menuitem", { name: "上移一位" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "下移一位" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "账号代理" })).toBeEnabled();
 });

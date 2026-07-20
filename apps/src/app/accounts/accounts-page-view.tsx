@@ -829,19 +829,25 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                     onCheckedChange={toggleSelectAllVisible}
                   />
                 </TableHead>
-                <TableHead className="w-[clamp(280px,34vw,440px)] min-w-[280px] max-w-[440px] whitespace-normal">
+                <TableHead className="w-[240px] min-w-[240px] max-w-[240px] whitespace-normal min-[1472px]:w-[clamp(280px,34vw,440px)] min-[1472px]:min-w-[280px] min-[1472px]:max-w-[440px]">
                   {t("账号信息")}
                 </TableHead>
-                <TableHead className="min-w-[300px] text-center">
+                <TableHead className="min-w-[260px] text-center min-[1472px]:min-w-[300px]">
                   {t("额度详情")}
                 </TableHead>
-                <TableHead className="w-[132px]">{t("顺序")}</TableHead>
-                <TableHead className="w-[132px] text-center">
+                <TableHead className="hidden w-[132px] min-[1472px]:table-cell">
+                  {t("顺序")}
+                </TableHead>
+                <TableHead className="w-[112px] text-center min-[1472px]:w-[132px]">
                   {t("Codex 运行账号")}
                 </TableHead>
-                <TableHead className="w-[112px]">{t("状态")}</TableHead>
-                <TableHead className="min-w-[180px]">{t("账号代理")}</TableHead>
-                <TableHead className="table-sticky-action-head w-[112px] text-center">
+                <TableHead className="hidden w-[112px] min-[1760px]:table-cell">
+                  {t("状态")}
+                </TableHead>
+                <TableHead className="hidden min-w-[180px] min-[1760px]:table-cell">
+                  {t("账号代理")}
+                </TableHead>
+                <TableHead className="table-sticky-action-head w-[84px] text-center min-[1472px]:w-[112px]">
                   {t("操作")}
                 </TableHead>
               </TableRow>
@@ -853,30 +859,30 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                     <TableCell>
                       <Skeleton className="mx-auto h-4 w-4" />
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="w-[240px] min-w-[240px] max-w-[240px] min-[1472px]:w-auto min-[1472px]:min-w-[280px] min-[1472px]:max-w-[440px]">
                       <Skeleton className="h-4 w-32" />
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="min-w-[260px] min-[1472px]:min-w-[300px]">
                       <div className="space-y-2">
                         <Skeleton className="h-4 w-40" />
                         <Skeleton className="h-4 w-40" />
                         <Skeleton className="h-4 w-40" />
                       </div>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="hidden min-[1472px]:table-cell">
                       <Skeleton className="h-4 w-10" />
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="w-[112px] min-[1472px]:w-auto">
                       <Skeleton className="mx-auto h-7 w-20 rounded-md" />
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="hidden min-[1760px]:table-cell">
                       <Skeleton className="h-6 w-16 rounded-full" />
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="hidden min-[1760px]:table-cell">
                       <Skeleton className="h-8 w-28" />
                     </TableCell>
-                    <TableCell className="table-sticky-action-cell">
-                      <Skeleton className="mx-auto h-8 w-24" />
+                    <TableCell className="table-sticky-action-cell w-[84px] min-[1472px]:w-auto">
+                      <Skeleton className="mx-auto h-8 w-16" />
                     </TableCell>
                   </TableRow>
                 ))
@@ -912,13 +918,13 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                           onCheckedChange={() => toggleSelect(account.id)}
                         />
                       </TableCell>
-                      <TableCell className="w-[clamp(280px,34vw,440px)] min-w-[280px] max-w-[440px] whitespace-normal align-top">
+                      <TableCell className="w-[240px] min-w-[240px] max-w-[240px] whitespace-normal align-top min-[1472px]:w-[clamp(280px,34vw,440px)] min-[1472px]:min-w-[280px] min-[1472px]:max-w-[440px]">
                         <AccountInfoCell
                           account={account}
                           isPreferred={account.preferred}
                         />
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="min-w-[260px] min-[1472px]:min-w-[300px]">
                         <QuotaOverviewCell items={quotaItems} />
                         <div className="mt-1.5 flex flex-wrap gap-1.5 text-[10px] text-muted-foreground">
                           {account.quotaCapacityPrimaryWindowTokens ||
@@ -950,7 +956,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                           )}
                         </div>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="hidden min-[1472px]:table-cell">
                         <div className="flex items-center gap-1">
                           <span className="rounded bg-muted/50 px-2 py-0.5 font-mono text-xs">
                             {account.priority}
@@ -1003,19 +1009,19 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                           </Button>
                         </div>
                       </TableCell>
-                      <TableCell className="text-center">
+                      <TableCell className="w-[112px] text-center min-[1472px]:w-auto">
                         <AccountCodexProfileCell
                           accountId={account.id}
                           state={codexProfileSwitch}
                         />
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="hidden min-[1760px]:table-cell">
                         <AccountStatusCell account={account} />
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="hidden min-[1760px]:table-cell">
                         <AccountProxyCell account={account} />
                       </TableCell>
-                      <TableCell className="table-sticky-action-cell">
+                      <TableCell className="table-sticky-action-cell w-[84px] min-[1472px]:w-auto">
                         <div className="table-action-cell gap-1">
                           <Button
                             variant="ghost"
@@ -1029,25 +1035,28 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                             <BarChart3 className="h-4 w-4" />
                           </Button>
                           <DropdownMenu>
-                            <DropdownMenuTrigger>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8"
-                                render={<span />}
-                                nativeButton={false}
-                                disabled={!isServiceReady}
-                                title={t("更多账号操作")}
-                                aria-label={t("更多账号操作")}
-                              >
-                                <MoreVertical className="h-4 w-4" />
-                                <span className="sr-only">
-                                  {t("更多账号操作")}
-                                </span>
-                              </Button>
+                            <DropdownMenuTrigger
+                              render={
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8"
+                                  render={<span />}
+                                  nativeButton={false}
+                                />
+                              }
+                              nativeButton={false}
+                              disabled={!isServiceReady}
+                              title={t("更多账号操作")}
+                              aria-label={t("更多账号操作")}
+                            >
+                              <MoreVertical className="h-4 w-4" />
+                              <span className="sr-only">
+                                {t("更多账号操作")}
+                              </span>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
-                                  <DropdownMenuGroup>
+                              <DropdownMenuGroup>
                               <DropdownMenuItem
                                 className="gap-2"
                                 disabled={
@@ -1080,6 +1089,45 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                                 <DropdownMenuShortcut>RT</DropdownMenuShortcut>
                               </DropdownMenuItem>
                               <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                className="gap-2 min-[1472px]:hidden"
+                                disabled={
+                                  !isServiceReady ||
+                                  isReorderingAccounts ||
+                                  isUpdatingProfileAccountId === account.id
+                                }
+                                onClick={() => openAccountEditor(account)}
+                              >
+                                <PencilLine className="h-4 w-4" />
+                                {t("编辑账号信息")}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                className="gap-2 min-[1472px]:hidden"
+                                disabled={
+                                  !isServiceReady ||
+                                  !canMoveUp ||
+                                  isReorderingAccounts ||
+                                  isUpdatingProfileAccountId === account.id
+                                }
+                                onClick={() => void handleMoveAccount(account, "up")}
+                              >
+                                <ArrowUp className="h-4 w-4" />
+                                {t("上移一位")}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                className="gap-2 min-[1472px]:hidden"
+                                disabled={
+                                  !isServiceReady ||
+                                  !canMoveDown ||
+                                  isReorderingAccounts ||
+                                  isUpdatingProfileAccountId === account.id
+                                }
+                                onClick={() => void handleMoveAccount(account, "down")}
+                              >
+                                <ArrowDown className="h-4 w-4" />
+                                {t("下移一位")}
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator className="min-[1472px]:hidden" />
                               <DropdownMenuItem
                                 className="gap-2"
                                 disabled={!isServiceReady || isUpdatingPreferred}
