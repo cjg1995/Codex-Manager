@@ -861,6 +861,10 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                     </TableCell>
                     <TableCell className="w-[240px] min-w-[240px] max-w-[240px] min-[1472px]:w-auto min-[1472px]:min-w-[280px] min-[1472px]:max-w-[440px]">
                       <Skeleton className="h-4 w-32" />
+                      <div className="mt-2 flex items-center gap-1.5 min-[1760px]:hidden">
+                        <Skeleton className="h-1.5 w-1.5 rounded-full" />
+                        <Skeleton className="h-3 w-14" />
+                      </div>
                     </TableCell>
                     <TableCell className="min-w-[260px] min-[1472px]:min-w-[300px]">
                       <div className="space-y-2">
@@ -923,6 +927,12 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                           account={account}
                           isPreferred={account.preferred}
                         />
+                        <div
+                          className="mt-1.5 min-[1760px]:hidden"
+                          data-testid="account-status-compact"
+                        >
+                          <AccountStatusCell account={account} />
+                        </div>
                       </TableCell>
                       <TableCell className="min-w-[260px] min-[1472px]:min-w-[300px]">
                         <QuotaOverviewCell items={quotaItems} />
@@ -1015,7 +1025,10 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                           state={codexProfileSwitch}
                         />
                       </TableCell>
-                      <TableCell className="hidden min-[1760px]:table-cell">
+                      <TableCell
+                        className="hidden min-[1760px]:table-cell"
+                        data-testid="account-status-wide"
+                      >
                         <AccountStatusCell account={account} />
                       </TableCell>
                       <TableCell className="hidden min-[1760px]:table-cell">

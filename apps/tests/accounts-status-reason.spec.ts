@@ -185,6 +185,8 @@ test("accounts page shows status reason and keeps compact layout usable", async 
   const proxyHeader = headers.filter({ hasText: "账号代理" });
   const actionHeader = headers.filter({ hasText: "操作" });
   const tableContainer = page.locator('[data-slot="table-container"]').first();
+  const compactStatus = page.getByTestId("account-status-compact");
+  const wideStatus = page.getByTestId("account-status-wide");
 
   const expectTableToFit = async () => {
     const tableMetrics = await tableContainer.evaluate((element) => ({
@@ -212,9 +214,13 @@ test("accounts page shows status reason and keeps compact layout usable", async 
   await expect(proxyHeader).toBeVisible();
   await expect(actionHeader).toBeVisible();
   await expect(page.getByText("运行中", { exact: true })).toBeVisible();
+  await expect(compactStatus).toBeHidden();
+  await expect(wideStatus).toBeVisible();
   await expectTableToFit();
 
-  const reasonText = page.getByText("Refresh Token 已被重复使用，需要重新登录");
+  const reasonText = wideStatus.getByText(
+    "Refresh Token 已被重复使用，需要重新登录",
+  );
   await expect(reasonText).toBeVisible();
 
   await reasonText.hover();
@@ -232,18 +238,25 @@ test("accounts page shows status reason and keeps compact layout usable", async 
   await expect(statusHeader).toBeHidden();
   await expect(proxyHeader).toBeHidden();
   await expect(actionHeader).toBeVisible();
+  await expect(wideStatus).toBeHidden();
+  await expect(compactStatus).toBeVisible();
+  await expect(
+    compactStatus.getByText("Refresh Token 已被重复使用，需要重新登录"),
+  ).toBeVisible();
   await expectTableToFit();
 
   await page.setViewportSize({ width: 1472, height: 800 });
   await expect(orderHeader).toBeVisible();
   await expect(statusHeader).toBeHidden();
   await expect(proxyHeader).toBeHidden();
+  await expect(compactStatus).toBeVisible();
   await expectTableToFit();
 
   await page.setViewportSize({ width: 1471, height: 800 });
   await expect(orderHeader).toBeHidden();
   await expect(statusHeader).toBeHidden();
   await expect(proxyHeader).toBeHidden();
+  await expect(compactStatus).toBeVisible();
   await expectTableToFit();
 
   await page.setViewportSize({ width: 1100, height: 750 });
@@ -254,6 +267,7 @@ test("accounts page shows status reason and keeps compact layout usable", async 
   await expect(orderHeader).toBeHidden();
   await expect(statusHeader).toBeHidden();
   await expect(proxyHeader).toBeHidden();
+  await expect(compactStatus).toBeVisible();
   await expectTableToFit();
 
   const moreActionsButton = page.getByRole("button", { name: "更多账号操作" });
