@@ -149,6 +149,16 @@ test("账号列表逐行展示 Codex 运行账号且触发器不嵌套按钮", a
   assert.match(viewSource, /Codex 运行账号/);
   assert.match(viewSource, /<AccountCodexProfileCell/);
   assert.match(viewSource, /colSpan=\{8\}/);
+  assert.ok(
+    viewSource.indexOf('t("Codex 运行账号")') <
+      viewSource.indexOf('t("账号代理")'),
+    "Codex 运行账号列应显示在账号代理列之前",
+  );
+  assert.ok(
+    viewSource.indexOf("<AccountCodexProfileCell") <
+      viewSource.indexOf("<AccountProxyCell account={account} />"),
+    "逐行切换按钮应显示在账号代理单元格之前",
+  );
   assert.match(cellSource, /state\.activeAccountId === accountId/);
   assert.match(cellSource, /state\.candidateAccountIds\.has\(accountId\)/);
   assert.match(cellSource, /TooltipTrigger render=\{<span \/>\}/);

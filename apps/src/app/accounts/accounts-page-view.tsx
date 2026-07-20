@@ -836,11 +836,11 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                   {t("额度详情")}
                 </TableHead>
                 <TableHead className="w-[132px]">{t("顺序")}</TableHead>
-                <TableHead className="min-w-[180px]">{t("账号代理")}</TableHead>
-                <TableHead className="w-[112px]">{t("状态")}</TableHead>
                 <TableHead className="w-[132px] text-center">
                   {t("Codex 运行账号")}
                 </TableHead>
+                <TableHead className="w-[112px]">{t("状态")}</TableHead>
+                <TableHead className="min-w-[180px]">{t("账号代理")}</TableHead>
                 <TableHead className="table-sticky-action-head w-[112px] text-center">
                   {t("操作")}
                 </TableHead>
@@ -867,13 +867,13 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                       <Skeleton className="h-4 w-10" />
                     </TableCell>
                     <TableCell>
-                      <Skeleton className="h-8 w-28" />
+                      <Skeleton className="mx-auto h-7 w-20 rounded-md" />
                     </TableCell>
                     <TableCell>
                       <Skeleton className="h-6 w-16 rounded-full" />
                     </TableCell>
                     <TableCell>
-                      <Skeleton className="mx-auto h-7 w-20 rounded-md" />
+                      <Skeleton className="h-8 w-28" />
                     </TableCell>
                     <TableCell className="table-sticky-action-cell">
                       <Skeleton className="mx-auto h-8 w-24" />
@@ -1003,17 +1003,17 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                           </Button>
                         </div>
                       </TableCell>
-                      <TableCell>
-                        <AccountProxyCell account={account} />
-                      </TableCell>
-                      <TableCell>
-                        <AccountStatusCell account={account} />
-                      </TableCell>
                       <TableCell className="text-center">
                         <AccountCodexProfileCell
                           accountId={account.id}
                           state={codexProfileSwitch}
                         />
+                      </TableCell>
+                      <TableCell>
+                        <AccountStatusCell account={account} />
+                      </TableCell>
+                      <TableCell>
+                        <AccountProxyCell account={account} />
                       </TableCell>
                       <TableCell className="table-sticky-action-cell">
                         <div className="table-action-cell gap-1">
