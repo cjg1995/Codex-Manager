@@ -1,12 +1,9 @@
 use super::{
     build_warmup_headers, clear_auto_warmup_task_pending, consume_warmup_stream,
-    mark_auto_warmup_task_pending, resolve_target_accounts, resolve_warmup_model_slug,
-    should_retry_warmup_with_refresh, try_enqueue_auto_warmup_task, AutoWarmupTask,
-    WarmupAccountInFlightGuard, DEFAULT_WARMUP_MODEL,
+    mark_auto_warmup_task_pending, resolve_target_accounts, should_retry_warmup_with_refresh,
+    try_enqueue_auto_warmup_task, AutoWarmupTask, WarmupAccountInFlightGuard, WARMUP_MODEL,
 };
-use codexmanager_core::storage::{
-    now_ts, Account, ManagedModelV2, ManagedModelV2Upsert, ModelPriceV2, Storage, Token,
-};
+use codexmanager_core::storage::{now_ts, Account, Storage, Token};
 use std::io::Cursor;
 use std::sync::mpsc::sync_channel;
 
@@ -62,69 +59,9 @@ fn full_auto_warmup_queue_releases_pending_marker() {
     clear_auto_warmup_task_pending(account_id);
 }
 
-fn make_model(slug: &str, sort_order: i64, supported_in_api: bool) -> ManagedModelV2Upsert {
-    ManagedModelV2Upsert {
-        model: ManagedModelV2 {
-            slug: slug.to_string(),
-            display_name: slug.to_string(),
-            origin: "custom".to_string(),
-            enabled: true,
-            supported_in_api,
-            visibility: "list".to_string(),
-            sort_order,
-            instructions_mode: "passthrough".to_string(),
-            price: ModelPriceV2 {
-                price_status: "missing".to_string(),
-                ..Default::default()
-            },
-            ..ManagedModelV2::default()
-        },
-        ..ManagedModelV2Upsert::default()
-    }
-}
-
-fn disable_seed_models(storage: &Storage) {
-    for mut model in storage
-        .list_managed_models_v2(true)
-        .expect("list seeded models")
-    {
-        model.enabled = false;
-        storage
-            .upsert_managed_model_v2(&ManagedModelV2Upsert {
-                model,
-                ..Default::default()
-            })
-            .expect("disable seeded model");
-    }
-}
-
 #[test]
-fn resolve_warmup_model_slug_uses_first_supported_model_from_catalog_order() {
-    let storage = Storage::open_in_memory().expect("open in-memory storage");
-    storage.init().expect("init in-memory storage");
-    disable_seed_models(&storage);
-    let mut hidden = make_model("gpt-hidden", 0, true);
-    hidden.model.visibility = "hide".to_string();
-    for model in [
-        hidden,
-        make_model("gpt-unsupported", 1, false),
-        make_model("gpt-latest", 1, true),
-        make_model("gpt-older", 2, true),
-    ] {
-        storage
-            .upsert_managed_model_v2(&model)
-            .expect("save model catalog V2 item");
-    }
-
-    assert_eq!(resolve_warmup_model_slug(&storage), "gpt-latest");
-}
-
-#[test]
-fn resolve_warmup_model_slug_falls_back_when_catalog_missing() {
-    let storage = Storage::open_in_memory().expect("open in-memory storage");
-    storage.init().expect("init in-memory storage");
-    disable_seed_models(&storage);
-    assert_eq!(resolve_warmup_model_slug(&storage), DEFAULT_WARMUP_MODEL);
+fn warmup_model_is_gpt_5_6_terra() {
+    assert_eq!(WARMUP_MODEL, "gpt-5.6-terra");
 }
 
 #[test]

@@ -18,7 +18,10 @@ use crate::usage_token_refresh::{refresh_and_persist_access_token, token_refresh
 const DEFAULT_WARMUP_MESSAGE: &str = "hi";
 const FALLBACK_WARMUP_MESSAGE: &str = "你好";
 const WARMUP_UPSTREAM_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
-const DEFAULT_WARMUP_MODEL: &str = "gpt-5.3-codex";
+// Keep account warmup on a model that free accounts can use. This must not be
+// derived from the model catalog: its first entry is typically GPT-5.6 Sol,
+// which is unavailable on the free tier.
+const WARMUP_MODEL: &str = "gpt-5.6-terra";
 const WARMUP_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
 const AUTO_WARMUP_QUEUE_CAPACITY: usize = 128;
 
@@ -106,7 +109,7 @@ pub(crate) fn warmup_accounts(
     }
 
     let warmup_message = normalize_warmup_message(message);
-    let warmup_model = resolve_warmup_model_slug(&storage);
+    let warmup_model = WARMUP_MODEL;
     let mut results = Vec::with_capacity(accounts.len());
     let mut succeeded = 0usize;
 
@@ -137,7 +140,7 @@ pub(crate) fn warmup_accounts(
             &storage,
             &client,
             target,
-            warmup_model.as_str(),
+            warmup_model,
             warmup_message.as_str(),
         );
         if item.ok {
@@ -420,15 +423,6 @@ fn extract_status_code_from_message(message: &str) -> i64 {
         .take_while(|ch| ch.is_ascii_digit())
         .collect();
     digits.parse::<i64>().unwrap_or(500)
-}
-
-fn resolve_warmup_model_slug(storage: &Storage) -> String {
-    storage
-        .list_api_models_v2()
-        .ok()
-        .and_then(|models| models.into_iter().next().map(|model| model.slug))
-        .filter(|slug| !slug.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_WARMUP_MODEL.to_string())
 }
 
 fn send_warmup_request_with_fallback(

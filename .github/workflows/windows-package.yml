@@ -1,0 +1,95 @@
+name: windows-package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TAURI_CLI_VERSION: 2.10.1
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target-shared
+
+jobs:
+  build_frontend_dist:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup release environment
+        uses: ./.github/actions/setup-release-env
+        with:
+          enable-rust: "false"
+
+      - name: Install frontend dependencies
+        working-directory: apps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend dist
+        working-directory: apps
+        run: pnpm run build:desktop
+
+      - name: Pack frontend dist artifact
+        run: tar -czf frontend-dist.tar.gz -C apps out
+
+      - name: Upload frontend dist artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: codexmanager-frontend-dist
+          path: frontend-dist.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+
+  build_windows:
+    needs: build_frontend_dist
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup release environment
+        uses: ./.github/actions/setup-release-env
+
+      - name: Test account warmup
+        run: cargo test -p codexmanager-service account::warmup -- --nocapture
+
+      - name: Prepare frontend dist
+        uses: ./.github/actions/prepare-frontend-dist
+
+      - name: Build NSIS installer
+        uses: ./.github/actions/build-tauri-with-retry
+        with:
+          working-directory: apps
+          tauri-cli-version: ${{ env.TAURI_CLI_VERSION }}
+          bundles: nsis
+          shell-type: pwsh
+
+      - name: Stage Windows packages
+        shell: pwsh
+        run: |
+          $releaseDir = Join-Path "${{ env.CARGO_TARGET_DIR }}" "release"
+          $bundleDir = Join-Path $releaseDir "bundle"
+          $stageDir = Join-Path $releaseDir "windows-package"
+          New-Item -ItemType Directory -Force $stageDir | Out-Null
+
+          $installer = Get-ChildItem -Path $bundleDir -Recurse -File |
+            Where-Object { $_.Name -like "*-setup.exe" } |
+            Select-Object -First 1
+          if (-not $installer) {
+            throw "NSIS installer not found under: $bundleDir"
+          }
+
+          Copy-Item -Force $installer.FullName $stageDir
+          Copy-Item -Force (Join-Path $releaseDir "CodexManager.exe") (Join-Path $stageDir "CodexManager-portable.exe")
+          Get-ChildItem -Path $stageDir -File
+
+      - name: Upload Windows packages
+        uses: actions/upload-artifact@v6
+        with:
+          name: codexmanager-windows-package
+          path: ${{ env.CARGO_TARGET_DIR }}/release/windows-package/*.exe
+          if-no-files-found: error
+          compression-level: 0
