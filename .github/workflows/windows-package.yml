@@ -1,6 +1,9 @@
 name: windows-package
 
 on:
+  push:
+    branches:
+      - codex/warmup-terra-package
   workflow_dispatch:
 
 permissions:
