@@ -1448,7 +1448,7 @@ fn account_id_chunk_queries_defer_final_ordering_to_rust() {
         .collect::<Result<Vec<_>>>()
         .expect("collect explain");
     let codex_profile_sql =
-        active_account_codex_profile_candidates_for_ids_chunk_sql("id IN (?1, ?2)");
+        direct_account_codex_profile_candidates_for_ids_chunk_sql("id IN (?1, ?2)");
     let codex_profile_plan = storage
         .conn
         .prepare(&format!("EXPLAIN QUERY PLAN {codex_profile_sql}"))
@@ -1807,8 +1807,8 @@ fn find_account_direct_auth_profile_by_id_reads_direct_auth_fields_only() {
 }
 
 #[test]
-fn list_active_account_codex_profile_candidates_for_ids_filters_active_and_reads_candidate_fields()
-{
+fn list_direct_account_codex_profile_candidates_for_ids_includes_limited_and_reads_candidate_fields(
+) {
     let storage = Storage::open_in_memory().expect("open");
     storage.init().expect("init");
     let now = now_ts();
@@ -1827,22 +1827,26 @@ fn list_active_account_codex_profile_candidates_for_ids_filters_active_and_reads
     second.workspace_id = Some("ws-second".to_string());
     second.group_name = Some("group-second".to_string());
     second.sort = 0;
+    let mut limited = sample_account("acc-limited-codex-profile", "limited", now);
+    limited.label = "Limited Codex".to_string();
+    limited.sort = 2;
     let mut disabled = sample_account("acc-disabled-codex-profile", "disabled", now);
     disabled.label = "Disabled Codex".to_string();
     disabled.sort = -1;
-    for account in [&first, &second, &disabled] {
+    for account in [&first, &second, &limited, &disabled] {
         storage.insert_account(account).expect("insert account");
     }
 
     let targets = storage
-        .list_active_account_codex_profile_candidates_for_ids(&[
+        .list_direct_account_codex_profile_candidates_for_ids(&[
             "acc-disabled-codex-profile".to_string(),
             "acc-first-codex-profile".to_string(),
+            "acc-limited-codex-profile".to_string(),
             "acc-second-codex-profile".to_string(),
         ])
         .expect("list codex profile account candidates");
 
-    assert_eq!(targets.len(), 2);
+    assert_eq!(targets.len(), 3);
     assert_eq!(targets[0].id, "acc-second-codex-profile");
     assert_eq!(targets[0].label, "Second Codex");
     assert_eq!(targets[0].issuer, "issuer-second");
@@ -1856,6 +1860,8 @@ fn list_active_account_codex_profile_candidates_for_ids_filters_active_and_reads
     assert_eq!(targets[1].id, "acc-first-codex-profile");
     assert_eq!(targets[1].label, "First Codex");
     assert_eq!(targets[1].issuer, "issuer-first");
+    assert_eq!(targets[2].id, "acc-limited-codex-profile");
+    assert_eq!(targets[2].status, "limited");
 }
 
 #[test]

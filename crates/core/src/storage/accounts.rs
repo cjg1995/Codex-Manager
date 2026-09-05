@@ -527,7 +527,7 @@ impl Storage {
         Ok(out.into_iter().map(|item| item.0).collect())
     }
 
-    pub fn list_active_account_codex_profile_candidates_for_ids(
+    pub fn list_direct_account_codex_profile_candidates_for_ids(
         &self,
         account_ids: &[String],
     ) -> Result<Vec<AccountCodexProfileCandidate>> {
@@ -538,7 +538,7 @@ impl Storage {
 
         let mut out = Vec::new();
         for chunk in account_ids.chunks(SQLITE_IN_CLAUSE_BATCH_SIZE) {
-            out.extend(list_active_account_codex_profile_candidates_for_ids_chunk(
+            out.extend(list_direct_account_codex_profile_candidates_for_ids_chunk(
                 self, chunk,
             )?);
         }
@@ -1661,12 +1661,12 @@ fn accounts_for_ids_chunk_sql(condition: &str) -> String {
     )
 }
 
-fn active_account_codex_profile_candidates_for_ids_chunk_sql(condition: &str) -> String {
+fn direct_account_codex_profile_candidates_for_ids_chunk_sql(condition: &str) -> String {
     format!(
         "SELECT id, label, issuer, chatgpt_account_id, workspace_id, group_name, status, sort, updated_at
          FROM accounts
          WHERE {condition}
-           AND LOWER(TRIM(COALESCE(status, ''))) = 'active'"
+           AND LOWER(TRIM(COALESCE(status, ''))) IN ('active', 'limited')"
     )
 }
 
@@ -1882,14 +1882,14 @@ fn usage_refresh_token_targets_by_status_sql(status_condition: &str) -> String {
     )
 }
 
-fn list_active_account_codex_profile_candidates_for_ids_chunk(
+fn list_direct_account_codex_profile_candidates_for_ids_chunk(
     storage: &Storage,
     account_ids: &[String],
 ) -> Result<Vec<(AccountCodexProfileCandidate, i64, i64)>> {
     let Some((condition, params)) = text_id_in_clause("id", account_ids) else {
         return Ok(Vec::new());
     };
-    let sql = active_account_codex_profile_candidates_for_ids_chunk_sql(&condition);
+    let sql = direct_account_codex_profile_candidates_for_ids_chunk_sql(&condition);
     let mut stmt = storage.conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(params), |row| {
         Ok((

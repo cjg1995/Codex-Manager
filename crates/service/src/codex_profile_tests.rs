@@ -251,7 +251,7 @@ fn usable_account_token_candidates_by_account_indexes_candidates() {
 }
 
 #[test]
-fn list_candidates_uses_active_account_projection_and_usable_tokens() {
+fn list_candidates_includes_limited_accounts_with_usable_tokens() {
     let _lock = crate::test_env_guard();
     let dir = temp_profile("codex-profile-candidates");
     fs::create_dir_all(&dir).expect("mkdir temp dir");
@@ -265,6 +265,8 @@ fn list_candidates_uses_active_account_projection_and_usable_tokens() {
     active.group_name = Some("candidate-group".to_string());
     let mut disabled = test_account("acc-disabled-candidate", "disabled");
     disabled.label = "Disabled Candidate".to_string();
+    let mut limited = test_account("acc-limited-candidate", "limited");
+    limited.label = "Limited Candidate".to_string();
     storage
         .insert_account(&active)
         .expect("insert active account");
@@ -272,11 +274,17 @@ fn list_candidates_uses_active_account_projection_and_usable_tokens() {
         .insert_account(&disabled)
         .expect("insert disabled account");
     storage
+        .insert_account(&limited)
+        .expect("insert limited account");
+    storage
         .insert_token(&test_token("acc-active-candidate", "access", "refresh"))
         .expect("insert active token");
     storage
         .insert_token(&test_token("acc-disabled-candidate", "access", "refresh"))
         .expect("insert disabled token");
+    storage
+        .insert_token(&test_token("acc-limited-candidate", "access", "refresh"))
+        .expect("insert limited token");
     storage
         .insert_account(&test_account("acc-missing-refresh", "active"))
         .expect("insert missing refresh account");
@@ -287,8 +295,12 @@ fn list_candidates_uses_active_account_projection_and_usable_tokens() {
 
     let result = list_candidates().expect("list candidates");
 
-    assert_eq!(result.accounts.len(), 1);
-    let account = &result.accounts[0];
+    assert_eq!(result.accounts.len(), 2);
+    let account = result
+        .accounts
+        .iter()
+        .find(|account| account.id == "acc-active-candidate")
+        .expect("active account candidate");
     assert_eq!(account.id, "acc-active-candidate");
     assert_eq!(account.label, "Active Candidate");
     assert_eq!(account.group_name.as_deref(), Some("candidate-group"));
@@ -303,7 +315,21 @@ fn list_candidates_uses_active_account_projection_and_usable_tokens() {
     );
     assert_eq!(account.issuer, "issuer-acc-active-candidate");
     assert_eq!(account.last_refresh, 123);
+    let limited = result
+        .accounts
+        .iter()
+        .find(|account| account.id == "acc-limited-candidate")
+        .expect("limited account candidate");
+    assert_eq!(limited.status, "limited");
     cleanup_profile(&dir);
+}
+
+#[test]
+fn direct_profile_switch_allows_limited_accounts() {
+    assert!(account_status_can_switch_direct_profile("active"));
+    assert!(account_status_can_switch_direct_profile(" limited "));
+    assert!(!account_status_can_switch_direct_profile("disabled"));
+    assert!(!account_status_can_switch_direct_profile("unavailable"));
 }
 
 #[test]

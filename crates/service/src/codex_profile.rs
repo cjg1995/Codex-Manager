@@ -255,7 +255,7 @@ pub(crate) fn list_candidates() -> Result<CodexProfileCandidates, String> {
     let mut account_ids = tokens.keys().cloned().collect::<Vec<_>>();
     account_ids.sort();
     let mut accounts = storage
-        .list_active_account_codex_profile_candidates_for_ids(&account_ids)
+        .list_direct_account_codex_profile_candidates_for_ids(&account_ids)
         .map_err(|err| format!("list accounts failed: {err}"))?
         .into_iter()
         .filter_map(|account| account_candidate(&account, tokens.get(&account.id)))
@@ -304,8 +304,11 @@ pub(crate) fn apply_direct_account(
         .find_account_direct_auth_profile_by_id(account_id)
         .map_err(|err| format!("read account failed: {err}"))?
         .ok_or_else(|| "account not found".to_string())?;
-    if account.status.trim() != "active" {
-        return Err("account is not active".to_string());
+    // A quota-exhausted account is marked `limited` so the gateway can skip it,
+    // but its valid credentials must remain manually selectable for Codex direct
+    // mode (for example, after the quota window has reset).
+    if !account_status_can_switch_direct_profile(&account.status) {
+        return Err("account is not active or limited".to_string());
     }
     let mut token = storage
         .find_token_by_account_id(account_id)
@@ -514,6 +517,13 @@ fn api_key_candidate(api_key: ApiKeyCodexProfileCandidate) -> Option<CodexProfil
 
 fn api_key_status_is_active(status: &str) -> bool {
     !status.trim().eq_ignore_ascii_case("disabled")
+}
+
+fn account_status_can_switch_direct_profile(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "active" | "limited"
+    )
 }
 
 fn token_candidate_is_usable(token: &AccountTokenCandidate) -> bool {
