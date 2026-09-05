@@ -59,6 +59,9 @@ jobs:
       - name: Test account warmup
         run: cargo test -p codexmanager-service account::warmup -- --nocapture
 
+      - name: Test Codex profile switching
+        run: cargo test -p codexmanager-service codex_profile -- --nocapture
+
       - name: Prepare frontend dist
         uses: ./.github/actions/prepare-frontend-dist
 
