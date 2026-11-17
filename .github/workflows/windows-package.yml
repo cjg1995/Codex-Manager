@@ -76,12 +76,12 @@ jobs:
           bundles: nsis
           shell-type: pwsh
 
-      - name: Stage Windows packages
+      - name: Stage Windows installer
         shell: pwsh
         run: |
           $releaseDir = Join-Path "${{ env.CARGO_TARGET_DIR }}" "release"
           $bundleDir = Join-Path $releaseDir "bundle"
-          $stageDir = Join-Path $releaseDir "windows-package"
+          $stageDir = Join-Path $releaseDir "windows-installer"
           New-Item -ItemType Directory -Force $stageDir | Out-Null
 
           $installer = Get-ChildItem -Path $bundleDir -Recurse -File |
@@ -92,13 +92,12 @@ jobs:
           }
 
           Copy-Item -Force $installer.FullName $stageDir
-          Copy-Item -Force (Join-Path $releaseDir "CodexManager.exe") (Join-Path $stageDir "CodexManager-portable.exe")
           Get-ChildItem -Path $stageDir -File
 
-      - name: Upload Windows packages
+      - name: Upload Windows installer
         uses: actions/upload-artifact@v6
         with:
-          name: codexmanager-windows-package
-          path: ${{ env.CARGO_TARGET_DIR }}/release/windows-package/*.exe
+          name: codexmanager-windows-installer
+          path: ${{ env.CARGO_TARGET_DIR }}/release/windows-installer/*-setup.exe
           if-no-files-found: error
           compression-level: 0

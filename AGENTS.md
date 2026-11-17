@@ -96,3 +96,31 @@ Tauri rules.
   release/build commands.
 - Root governance docs describe repository-level boundaries. App-specific
   frontend rules belong in `apps/AGENTS.md`.
+
+## 9. Mandatory GitHub Windows Package Delivery
+- After every completed product change that modifies tracked source, dependency,
+  configuration, or workflow files, finish the delivery through the GitHub
+  Windows packaging flow unless the user explicitly says not to package it.
+- Run the relevant local validation first. If Windows Rust linking is unavailable
+  locally, do not install Visual Studio or other large local toolchains solely
+  for packaging; use the GitHub Windows runner as the final validation and build
+  environment.
+- Commit only the files belonging to the task, preserve unrelated worktree
+  changes, and push the task branch to the user-authorized `fork` remote. Do
+  not push to `origin`, merge branches, create a GitHub Release, or overwrite
+  existing artifacts unless the user explicitly asks.
+- Trigger or wait for `.github/workflows/windows-package.yml` on that branch.
+  The workflow must finish successfully, including targeted tests, frontend
+  static build, NSIS installer build, and upload of the
+  `codexmanager-windows-installer` artifact. The artifact must contain only the
+  NSIS installer; do not upload or link a portable executable. If it fails,
+  inspect the failure, fix it, and rerun before reporting completion.
+- In the final handoff, always provide a directly clickable GitHub artifact
+  download link in this stable web form:
+  `https://github.com/<fork-owner>/<fork-repo>/actions/runs/<run-id>/artifacts/<artifact-id>`.
+  Do not give an API endpoint or an expiring Blob Storage URL. State that GitHub
+  sign-in may be required and that the downloaded ZIP contains only the NSIS
+  installer.
+- Downloading the artifact back to the local workspace is optional and should
+  only be attempted when the user asks for a local copy; the clickable GitHub
+  artifact link is the default delivery mechanism.
