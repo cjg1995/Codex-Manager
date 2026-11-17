@@ -65,18 +65,21 @@ fn normalize_proxy_candidate_rejects_unsupported_urls() {
     assert_eq!(normalize_proxy_candidate("ftp://127.0.0.1:21"), None);
 }
 
+#[test]
+fn parse_proxy_enable_text_reads_registry_dword_text() {
+    assert!(parse_proxy_enable_text("0x1"));
+    assert!(parse_proxy_enable_text("1"));
+    assert!(parse_proxy_enable_text("true"));
+    assert!(!parse_proxy_enable_text("0x0"));
+    assert!(!parse_proxy_enable_text("0"));
+    assert!(!parse_proxy_enable_text("false"));
+}
+
 #[cfg(windows)]
 #[test]
-fn parse_reg_query_value_reads_value_column() {
-    let output = r#"
-HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Internet Settings
-    ProxyServer    REG_SZ    127.0.0.1:7892
-"#;
-
-    assert_eq!(
-        parse_reg_query_value(output, "ProxyServer").as_deref(),
-        Some("127.0.0.1:7892")
-    );
+fn windows_system_proxy_lookup_stays_stable_without_spawning_reg() {
+    let target = "https://chatgpt.com/backend-api/wham/usage";
+    assert_eq!(system_proxy_url_for(target), system_proxy_url_for(target));
 }
 
 struct EnvGuard {

@@ -2,9 +2,18 @@ use rand::RngCore;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(windows)]
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 #[cfg(windows)]
-use std::process::Command;
+use std::sync::{Mutex, OnceLock};
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS};
+#[cfg(windows)]
+use windows_sys::Win32::System::Registry::{
+    RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ, REG_DWORD,
+    REG_EXPAND_SZ, REG_SZ,
+};
 
 const ENV_CANDIDATES: [&str; 3] = ["codexmanager.env", "CodexManager.env", ".env"];
 const DEFAULT_DB_FILENAME: &str = "codexmanager.db";
@@ -203,16 +212,19 @@ fn normalize_proxy_candidate(raw: &str) -> Option<String> {
 
 #[cfg(windows)]
 fn system_proxy_url_for(target_url: &str) -> Option<String> {
-    if !windows_proxy_enabled() {
+    let snapshot = windows_internet_proxy_snapshot();
+    if !snapshot.proxy_enabled {
         return None;
     }
-    if query_windows_internet_setting("ProxyOverride")
+    if snapshot
+        .proxy_override
         .as_deref()
         .is_some_and(|rules| proxy_bypass_matches_target(target_url, rules))
     {
         return None;
     }
-    query_windows_internet_setting("ProxyServer")
+    snapshot
+        .proxy_server
         .as_deref()
         .and_then(parse_windows_proxy_server)
 }
@@ -231,44 +243,85 @@ fn proxy_bypass_from_env(target_url: &str) -> bool {
 }
 
 #[cfg(windows)]
-fn windows_proxy_enabled() -> bool {
-    query_windows_internet_setting("ProxyEnable")
-        .as_deref()
-        .is_some_and(parse_windows_proxy_enabled)
+#[derive(Clone)]
+struct WindowsInternetProxySnapshot {
+    fetched_at: std::time::Instant,
+    proxy_enabled: bool,
+    proxy_server: Option<String>,
+    proxy_override: Option<String>,
 }
 
 #[cfg(windows)]
-fn query_windows_internet_setting(name: &str) -> Option<String> {
-    let output = Command::new("reg")
-        .args([
-            "query",
-            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
-            "/v",
-            name,
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
+struct InternetSettingsKey(HKEY);
+
+#[cfg(windows)]
+impl Drop for InternetSettingsKey {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { RegCloseKey(self.0) };
+        }
+    }
+}
+
+/// 桌面进程没有控制台。启动加载会按账号反复解析系统代理，
+/// 若每次都拉起 `reg.exe`，Windows 会连续弹出并关掉命令行黑框。
+#[cfg(windows)]
+fn windows_internet_proxy_snapshot() -> WindowsInternetProxySnapshot {
+    const TTL: std::time::Duration = std::time::Duration::from_secs(30);
+    static CACHE: OnceLock<Mutex<Option<WindowsInternetProxySnapshot>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    let mut guard = cache.lock().unwrap_or_else(|err| err.into_inner());
+    if let Some(snapshot) = guard.as_ref() {
+        if snapshot.fetched_at.elapsed() < TTL {
+            return snapshot.clone();
+        }
+    }
+    let snapshot = read_windows_internet_proxy_snapshot();
+    *guard = Some(snapshot.clone());
+    snapshot
+}
+
+#[cfg(windows)]
+fn read_windows_internet_proxy_snapshot() -> WindowsInternetProxySnapshot {
+    let Some(key) = open_internet_settings_key() else {
+        return WindowsInternetProxySnapshot {
+            fetched_at: std::time::Instant::now(),
+            proxy_enabled: false,
+            proxy_server: None,
+            proxy_override: None,
+        };
+    };
+    WindowsInternetProxySnapshot {
+        fetched_at: std::time::Instant::now(),
+        proxy_enabled: registry_proxy_enabled(key.0),
+        proxy_server: query_registry_string(key.0, "ProxyServer"),
+        proxy_override: query_registry_string(key.0, "ProxyOverride"),
+    }
+}
+
+#[cfg(windows)]
+fn open_internet_settings_key() -> Option<InternetSettingsKey> {
+    let sub_key = wide_null("Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings");
+    let mut key = std::ptr::null_mut();
+    let status =
+        unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, sub_key.as_ptr(), 0, KEY_READ, &mut key) };
+    if status != ERROR_SUCCESS || key.is_null() {
         return None;
     }
-    parse_reg_query_value(&String::from_utf8_lossy(&output.stdout), name)
+    Some(InternetSettingsKey(key))
 }
 
 #[cfg(windows)]
-fn parse_reg_query_value(output: &str, name: &str) -> Option<String> {
-    let normalized_name = name.to_ascii_lowercase();
-    output.lines().find_map(|line| {
-        let trimmed = line.trim();
-        if !trimmed.to_ascii_lowercase().starts_with(&normalized_name) {
-            return None;
-        }
-        let parts = trimmed.split_whitespace().collect::<Vec<_>>();
-        (parts.len() >= 3).then(|| parts[2..].join(" "))
-    })
+fn registry_proxy_enabled(key: HKEY) -> bool {
+    if let Some(value) = query_registry_dword(key, "ProxyEnable") {
+        return value != 0;
+    }
+    query_registry_string(key, "ProxyEnable")
+        .as_deref()
+        .is_some_and(parse_proxy_enable_text)
 }
 
-#[cfg(windows)]
-fn parse_windows_proxy_enabled(raw: &str) -> bool {
+fn parse_proxy_enable_text(raw: &str) -> bool {
     let value = raw.trim();
     if value.eq_ignore_ascii_case("true") {
         return true;
@@ -277,6 +330,80 @@ fn parse_windows_proxy_enabled(raw: &str) -> bool {
         return u32::from_str_radix(hex, 16).is_ok_and(|parsed| parsed != 0);
     }
     value.parse::<u32>().is_ok_and(|parsed| parsed != 0)
+}
+
+#[cfg(windows)]
+fn query_registry_dword(key: HKEY, name: &str) -> Option<u32> {
+    let name = wide_null(name);
+    let mut kind = 0u32;
+    let mut value = 0u32;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    let status = unsafe {
+        RegQueryValueExW(
+            key,
+            name.as_ptr(),
+            std::ptr::null_mut(),
+            &mut kind,
+            (&mut value as *mut u32).cast(),
+            &mut size,
+        )
+    };
+    (status == ERROR_SUCCESS && kind == REG_DWORD && size == 4).then_some(value)
+}
+
+#[cfg(windows)]
+fn query_registry_string(key: HKEY, name: &str) -> Option<String> {
+    let name = wide_null(name);
+    let mut kind = 0u32;
+    let mut size = 0u32;
+    let status = unsafe {
+        RegQueryValueExW(
+            key,
+            name.as_ptr(),
+            std::ptr::null_mut(),
+            &mut kind,
+            std::ptr::null_mut(),
+            &mut size,
+        )
+    };
+    if !matches!(status, ERROR_SUCCESS | ERROR_MORE_DATA)
+        || !matches!(kind, REG_SZ | REG_EXPAND_SZ)
+        || size < 2
+        || size % 2 != 0
+    {
+        return None;
+    }
+
+    let mut data = vec![0u16; size as usize / 2];
+    let status = unsafe {
+        RegQueryValueExW(
+            key,
+            name.as_ptr(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            data.as_mut_ptr().cast(),
+            &mut size,
+        )
+    };
+    if status != ERROR_SUCCESS || size as usize != data.len() * 2 {
+        return None;
+    }
+    if data.last().copied() == Some(0) {
+        data.pop();
+    }
+    let value = std::ffi::OsString::from_wide(&data)
+        .to_string_lossy()
+        .trim()
+        .to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+#[cfg(windows)]
+fn wide_null(value: &str) -> Vec<u16> {
+    std::ffi::OsStr::new(value)
+        .encode_wide()
+        .chain(Some(0))
+        .collect()
 }
 
 fn parse_windows_proxy_server(raw: &str) -> Option<String> {
