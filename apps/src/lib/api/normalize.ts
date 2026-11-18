@@ -54,6 +54,7 @@ import {
   getUsageDisplayBuckets,
   isLowQuotaUsage,
   toNullableNumber,
+  usageSnapshotStillHasQuota,
 } from "@/lib/utils/usage";
 import { readBillingModeLock } from "./billing-mode-lock";
 
@@ -419,8 +420,14 @@ export function normalizeAccount(item: unknown, usage?: AccountUsage | null): Ac
 
   const name = asString(source.label || source.name) || id;
   const groupName = asString(source.groupName ?? source.group_name);
-  const status = asString(source.status);
-  const statusReason = asString(source.statusReason ?? source.status_reason);
+  const rawStatus = asString(source.status);
+  const rawStatusReason = asString(source.statusReason ?? source.status_reason);
+  const staleUsageLimit =
+    rawStatus.trim().toLowerCase() === "limited" &&
+    rawStatusReason.trim().toLowerCase() === "usage_limit_exhausted" &&
+    usageSnapshotStillHasQuota(usage);
+  const status = staleUsageLimit ? "active" : rawStatus;
+  const statusReason = staleUsageLimit ? "usage_ok" : rawStatusReason;
   const rawHasToken = source.hasToken ?? source.has_token;
   const hasToken = typeof rawHasToken === "boolean" ? Boolean(rawHasToken) : true;
   const availability = calcAvailability(usage, { status, statusReason, hasToken });

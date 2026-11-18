@@ -204,3 +204,116 @@ fn gateway_usage_limit_error_marks_account_limited_when_snapshot_exhausted() {
         Some("usage_limit_exhausted")
     );
 }
+
+#[test]
+fn gateway_usage_limit_error_keeps_account_active_when_snapshot_has_quota() {
+    let _guard = crate::test_env_guard();
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    let now = now_ts();
+    storage
+        .insert_account(&Account {
+            id: "acc-usage-remaining".to_string(),
+            label: "usage-remaining".to_string(),
+            issuer: "issuer".to_string(),
+            chatgpt_account_id: None,
+            workspace_id: None,
+            group_name: None,
+            sort: 0,
+            status: "limited".to_string(),
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("insert account");
+    super::set_account_status(
+        &storage,
+        "acc-usage-remaining",
+        "limited",
+        "usage_limit_exhausted",
+    );
+    storage
+        .insert_usage_snapshot(&UsageSnapshotRecord {
+            account_id: "acc-usage-remaining".to_string(),
+            used_percent: Some(9.0),
+            window_minutes: Some(300),
+            resets_at: None,
+            secondary_used_percent: Some(42.0),
+            secondary_window_minutes: Some(10080),
+            secondary_resets_at: None,
+            credits_json: None,
+            captured_at: now,
+        })
+        .expect("insert usage snapshot");
+
+    assert!(
+        !mark_account_unavailable_for_gateway_error(
+            &storage,
+            "acc-usage-remaining",
+            "You've hit your usage limit. To get more access now, try again at 8:02 PM."
+        )
+    );
+
+    let account = storage
+        .find_account_by_id("acc-usage-remaining")
+        .expect("find account")
+        .expect("account exists");
+    assert_eq!(account.status, "active");
+    let reasons = storage
+        .latest_account_status_reasons(&["acc-usage-remaining".to_string()])
+        .expect("load reasons");
+    assert_eq!(
+        reasons.get("acc-usage-remaining").map(String::as_str),
+        Some("usage_ok")
+    );
+}
+
+#[test]
+fn restore_limited_accounts_with_remaining_quota_keeps_exhausted_accounts() {
+    let _guard = crate::test_env_guard();
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    let now = now_ts();
+    for (id, used) in [("acc-open", 9.0_f64), ("acc-closed", 100.0_f64)] {
+        storage
+            .insert_account(&Account {
+                id: id.to_string(),
+                label: id.to_string(),
+                issuer: "issuer".to_string(),
+                chatgpt_account_id: None,
+                workspace_id: None,
+                group_name: None,
+                sort: 0,
+                status: "limited".to_string(),
+                created_at: now,
+                updated_at: now,
+            })
+            .expect("insert account");
+        super::set_account_status(&storage, id, "limited", "usage_limit_exhausted");
+        storage
+            .insert_usage_snapshot(&UsageSnapshotRecord {
+                account_id: id.to_string(),
+                used_percent: Some(used),
+                window_minutes: Some(300),
+                resets_at: None,
+                secondary_used_percent: Some(20.0),
+                secondary_window_minutes: Some(10080),
+                secondary_resets_at: None,
+                credits_json: None,
+                captured_at: now,
+            })
+            .expect("insert usage snapshot");
+    }
+
+    super::restore_limited_accounts_with_remaining_quota(&storage);
+
+    let open = storage
+        .find_account_by_id("acc-open")
+        .expect("find open")
+        .expect("open exists");
+    let closed = storage
+        .find_account_by_id("acc-closed")
+        .expect("find closed")
+        .expect("closed exists");
+    assert_eq!(open.status, "active");
+    assert_eq!(closed.status, "limited");
+}

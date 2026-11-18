@@ -1,4 +1,5 @@
-use codexmanager_core::storage::{now_ts, Event, Storage};
+use crate::account_availability::{evaluate_snapshot, Availability};
+use codexmanager_core::storage::{now_ts, Event, Storage, UsageSnapshotRecord};
 
 pub(crate) const REFRESH_TOKEN_REGION_BLOCKED_REASON: &str = "refresh_token_region_blocked";
 
@@ -287,7 +288,78 @@ fn mark_account_unavailable_for_confirmed_usage_exhausted(
     storage: &Storage,
     account_id: &str,
 ) -> bool {
+    // 用量快照仍有剩余时，上游文案不能把账号打成“额度已耗尽”。
+    // 这类文案会夹在正常回复里，也会在窗口远未用完时出现。
+    if latest_snapshot_has_remaining_quota(storage, account_id) {
+        clear_stale_usage_limit(storage, account_id);
+        return false;
+    }
     set_account_limited_with_reason(storage, account_id, "usage_limit_exhausted")
+}
+
+fn latest_snapshot_has_remaining_quota(storage: &Storage, account_id: &str) -> bool {
+    storage
+        .latest_usage_snapshot_for_account(account_id)
+        .ok()
+        .flatten()
+        .is_some_and(|snapshot| snapshot_has_remaining_quota(&snapshot))
+}
+
+fn snapshot_has_remaining_quota(snapshot: &UsageSnapshotRecord) -> bool {
+    matches!(evaluate_snapshot(snapshot), Availability::Available)
+}
+
+fn clear_stale_usage_limit(storage: &Storage, account_id: &str) {
+    let context = load_account_status_context(storage, account_id);
+    if !context.status.trim().eq_ignore_ascii_case("limited") {
+        return;
+    }
+    if !context
+        .reason
+        .as_deref()
+        .is_some_and(|reason| reason.eq_ignore_ascii_case("usage_limit_exhausted"))
+    {
+        return;
+    }
+    set_account_status_with_context(storage, account_id, "active", "usage_ok", Some(&context));
+}
+
+/// 把“快照仍有额度、状态却是额度耗尽”的账号改回可用，让网关能再次选中它们。
+pub(crate) fn restore_limited_accounts_with_remaining_quota(storage: &Storage) {
+    let Ok(account_ids) = storage.list_account_ids_by_statuses(&["limited".to_string()]) else {
+        return;
+    };
+    if account_ids.is_empty() {
+        return;
+    }
+    let Ok(reasons) = storage.latest_account_status_reasons(&account_ids) else {
+        return;
+    };
+    let Ok(snapshots) = storage.latest_usage_snapshots_for_accounts(&account_ids) else {
+        return;
+    };
+    for snapshot in snapshots {
+        if !snapshot_has_remaining_quota(&snapshot) {
+            continue;
+        }
+        let Some(reason) = reasons.get(&snapshot.account_id) else {
+            continue;
+        };
+        if !reason.eq_ignore_ascii_case("usage_limit_exhausted") {
+            continue;
+        }
+        let context = AccountStatusContext {
+            status: "limited".to_string(),
+            reason: Some(reason.clone()),
+        };
+        set_account_status_with_context(
+            storage,
+            &snapshot.account_id,
+            "active",
+            "usage_ok",
+            Some(&context),
+        );
+    }
 }
 
 /// 函数 `set_account_unavailable_with_reason`

@@ -297,6 +297,22 @@ export function isLimitedAccount(account?: { status?: string } | null): boolean 
 }
 
 /**
+ * 最新用量窗口还没用完。主窗口必须存在且低于 100%；
+ * 长周期窗口缺失时不拦截，出现并且达到 100% 才算耗尽。
+ */
+export function usageSnapshotStillHasQuota(
+  usage?: Partial<AccountUsage> | null
+): boolean {
+  const primaryUsed = toNullableNumber(usage?.usedPercent);
+  const primaryWindow = toNullableNumber(usage?.windowMinutes);
+  if (primaryUsed == null || primaryWindow == null || primaryUsed >= 100) {
+    return false;
+  }
+  const secondaryUsed = toNullableNumber(usage?.secondaryUsedPercent);
+  return secondaryUsed == null || secondaryUsed < 100;
+}
+
+/**
  * 函数 `isBannedAccount`
  *
  * 作者: gaohongshun
@@ -675,7 +691,7 @@ export function calcAvailability(
   if (isBannedAccount(account)) {
     return { text: "封禁", level: "bad" };
   }
-  if (isLimitedAccount(account)) {
+  if (isLimitedAccount(account) && !usageSnapshotStillHasQuota(usage)) {
     return { text: "限流", level: "bad" };
   }
   if (isUnavailableAccount(account)) {

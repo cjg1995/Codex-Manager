@@ -107,6 +107,7 @@ pub(crate) fn collect_gateway_candidates_with_low_quota_mode(
     storage: &Storage,
     low_quota_mode: LowQuotaCandidateMode,
 ) -> Result<Vec<(Account, Token)>, String> {
+    crate::account_status::restore_limited_accounts_with_remaining_quota(storage);
     if let Some(cached) = read_candidate_cache(low_quota_mode) {
         return Ok(cached);
     }
