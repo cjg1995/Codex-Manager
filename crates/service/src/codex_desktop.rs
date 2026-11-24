@@ -490,7 +490,9 @@ fn request_stop(pids: &[u32], force: bool) -> Result<(), String> {
 fn launch_windows(install: &DesktopInstall) -> Result<(), String> {
     if let Some(family) = install.package_family_name.as_deref() {
         let target = format!("shell:AppsFolder\\{family}!{STORE_APP_ID}");
-        return spawn_detached(Command::new("explorer.exe").arg(target));
+        let mut command = Command::new("explorer.exe");
+        command.arg(target);
+        return spawn_detached(command);
     }
     let Some(executable) = install.executable.as_ref() else {
         return Err("没有可打开的 Codex 程序。".to_string());
@@ -629,6 +631,7 @@ fn spawn_detached(mut command: Command) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
 
     fn process(
         pid: u32,
