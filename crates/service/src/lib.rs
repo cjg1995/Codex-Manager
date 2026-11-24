@@ -6,6 +6,7 @@ mod aggregate_api;
 mod apikey;
 pub(crate) mod app_settings;
 mod auth;
+mod codex_desktop;
 mod codex_profile;
 mod dashboard;
 mod errors;

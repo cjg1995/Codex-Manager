@@ -9,6 +9,9 @@ export const KO_ACCOUNTS_MESSAGES: MessageCatalog = {
   "当前服务的 Codex profile 正在使用此账号":
     "현재 서비스의 Codex 프로필이 이 계정을 사용하고 있습니다.",
   "切换 Codex profile 到此账号": "Codex 프로필을 이 계정으로 전환",
+  "切换到此账号并打开 Codex。如果已经打开，会先关闭再打开":
+    "이 계정으로 전환하고 Codex를 엽니다. 이미 열려 있으면 닫았다가 다시 엽니다.",
+  "已切换并打开 Codex": "계정을 전환하고 Codex를 열었습니다",
   "服务未连接，暂时无法切换 Codex 账号":
     "서비스 연결이 끊겨 현재 Codex 계정을 전환할 수 없습니다.",
   "Codex profile 当前不可写": "현재 Codex 프로필에 쓸 수 없습니다.",

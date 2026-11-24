@@ -65,6 +65,9 @@ jobs:
       - name: Test Codex profile switching
         run: cargo test -p codexmanager-service codex_profile -- --nocapture
 
+      - name: Test Codex desktop relaunch
+        run: cargo test -p codexmanager-service codex_desktop -- --nocapture
+
       - name: Test remaining quota is not marked rate limited
         run: cargo test -p codexmanager-service --lib account::status::tests -- --nocapture && cargo test -p codexmanager-service --lib gateway_error_status_change_invalidates_candidate_snapshot_cache -- --nocapture && cargo test -p codexmanager-service --lib gateway_usage_limit_with_exhausted_snapshot_invalidates_candidate_snapshot_cache -- --nocapture
 

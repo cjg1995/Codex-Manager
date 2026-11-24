@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useCodexProfileModeStatus } from "@/hooks/useCodexProfileModeStatus";
+import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import {
   CODEX_PROFILE_CANDIDATES_QUERY_KEY,
   CODEX_PROFILE_STATUS_QUERY_KEY,
@@ -25,6 +26,7 @@ export interface AccountCodexProfileSwitchState {
   isLoading: boolean;
   isProfileWritable: boolean;
   isServiceReady: boolean;
+  opensDesktopApp: boolean;
   switchingAccountId: string | null;
   switchAccount: (accountId: string) => void;
 }
@@ -43,6 +45,7 @@ export function useAccountCodexProfileSwitch(
   options: UseAccountCodexProfileSwitchOptions = {},
 ): AccountCodexProfileSwitchState {
   const { t } = useI18n();
+  const { isDesktopRuntime } = useRuntimeCapabilities();
   const queryClient = useQueryClient();
   const enabled = options.enabled ?? true;
   const statusQuery = useCodexProfileModeStatus({
@@ -96,12 +99,15 @@ export function useAccountCodexProfileSwitch(
       return codexProfileClient.applyDirectAccount({
         accountId: normalizedAccountId,
         codexHome: statusQuery.status?.codexHome || null,
+        launchApp: isDesktopRuntime,
       });
     },
     onSuccess: async (nextStatus) => {
       queryClient.setQueryData(CODEX_PROFILE_STATUS_QUERY_KEY, nextStatus);
       await refreshProfileCaches();
-      toast.success(t("已切换到账号直连"));
+      toast.success(
+        isDesktopRuntime ? t("已切换并打开 Codex") : t("已切换到账号直连"),
+      );
       showHistoryRepairToast(nextStatus.historyRepair);
     },
     onError: (error: unknown) => {
@@ -124,6 +130,7 @@ export function useAccountCodexProfileSwitch(
       enabled && (statusQuery.isLoading || candidatesQuery.isLoading),
     isProfileWritable: Boolean(status?.profileWritable),
     isServiceReady: statusQuery.isServiceReady,
+    opensDesktopApp: isDesktopRuntime,
     switchingAccountId:
       applyDirectAccountMutation.isPending &&
       typeof applyDirectAccountMutation.variables === "string"

@@ -26,6 +26,7 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             super::value_or_error(crate::codex_profile::apply_direct_account(
                 super::str_param(req, "accountId"),
                 super::str_param(req, "codexHome"),
+                super::bool_param(req, "launchApp").unwrap_or(false),
             ))
         }
         "codexProfile/applyGateway" => super::value_or_error(crate::codex_profile::apply_gateway(

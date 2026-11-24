@@ -64,7 +64,7 @@ export function usePlatformModePageState(
 ) {
   const queryClient = useQueryClient();
   const serviceStatus = useAppStore((state) => state.serviceStatus);
-  const { mode, canAccessManagementRpc } = useRuntimeCapabilities();
+  const { mode, canAccessManagementRpc, isDesktopRuntime } = useRuntimeCapabilities();
   const isServiceReady = canAccessManagementRpc && serviceStatus.connected;
   const isPageActive = useDesktopPageActive("/platform-mode/");
   const [codexHomeDraft, setCodexHomeDraft] = useState<string | null>(null);
@@ -162,10 +162,13 @@ export function usePlatformModePageState(
       codexProfileClient.applyDirectAccount({
         accountId: selectedAccountId,
         codexHome: codexHomeInput,
+        launchApp: isDesktopRuntime,
       }),
     onSuccess: async (nextStatus) => {
       await refreshAll();
-      toast.success(t("已切换到账号直连"));
+      toast.success(
+        isDesktopRuntime ? t("已切换并打开 Codex") : t("已切换到账号直连"),
+      );
       showHistoryRepairToast(nextStatus.historyRepair);
     },
     onError: (error: unknown) => {

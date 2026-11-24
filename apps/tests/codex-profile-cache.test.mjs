@@ -90,7 +90,7 @@ test("账号页快捷切换复用 Codex profile 状态、候选和应用接口",
   assert.match(hookSource, /codexProfileClient\.listCandidates\(\)/);
   assert.match(
     hookSource,
-    /codexProfileClient\.applyDirectAccount\(\{\s*accountId:\s*normalizedAccountId,\s*codexHome:\s*statusQuery\.status\?\.codexHome \|\| null,/s,
+    /codexProfileClient\.applyDirectAccount\(\{\s*accountId:\s*normalizedAccountId,\s*codexHome:\s*statusQuery\.status\?\.codexHome \|\| null,\s*launchApp:\s*isDesktopRuntime,/s,
   );
   assert.match(
     hookSource,
@@ -130,11 +130,15 @@ test("账号页快捷切换文案不假定 Codex profile 位于本机", async ()
   const source = [cellSource, ...catalogs].join("\n");
 
   assert.match(cellSource, /切换 Codex profile 到此账号/);
+  assert.match(cellSource, /state\.opensDesktopApp/);
+  assert.match(cellSource, /切换到此账号并打开 Codex。如果已经打开，会先关闭再打开/);
   assert.match(cellSource, /当前服务的 Codex profile 正在使用此账号/);
   assert.doesNotMatch(source, /切换本机 Codex 到此账号/);
   assert.doesNotMatch(source, /当前 Codex profile 正在使用此账号/);
   for (const catalog of catalogs) {
     assert.match(catalog, /"切换 Codex profile 到此账号"/);
+    assert.match(catalog, /"切换到此账号并打开 Codex。如果已经打开，会先关闭再打开"/);
+    assert.match(catalog, /"已切换并打开 Codex"/);
     assert.match(catalog, /"当前服务的 Codex profile 正在使用此账号"/);
   }
 });

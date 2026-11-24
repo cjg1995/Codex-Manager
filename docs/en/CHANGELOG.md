@@ -5,6 +5,10 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 
 ## [Unreleased]
 
+### Added
+
+- Switching the Codex runtime account in the desktop app now opens Codex. If Codex is already open, it is closed and opened again, and the opened app must be using the account that was just selected.
+
 ## [0.4.3] - 2026-07-19
 
 ### Added

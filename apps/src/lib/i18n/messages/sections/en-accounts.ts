@@ -10,6 +10,9 @@ export const EN_ACCOUNTS_MESSAGES: MessageCatalog = {
     "The current service's Codex profile is using this account.",
   "切换 Codex profile 到此账号":
     "Switch the Codex profile to this account",
+  "切换到此账号并打开 Codex。如果已经打开，会先关闭再打开":
+    "Switch to this account and open Codex. If Codex is already open, it closes and opens again.",
+  "已切换并打开 Codex": "Switched accounts and opened Codex",
   "服务未连接，暂时无法切换 Codex 账号":
     "The service is disconnected, so the Codex account cannot be switched right now.",
   "Codex profile 当前不可写": "The Codex profile is not writable.",

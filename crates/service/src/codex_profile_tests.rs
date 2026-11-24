@@ -179,6 +179,21 @@ base_url = "https://example.test/v1"
     assert!(!output.contains("[model_providers.cm]"));
     assert!(output.contains("[model_providers.other]"));
     assert!(output.contains("model = \"gpt-5.4\""));
+    assert!(output.contains("cli_auth_credentials_store = \"file\""));
+}
+
+#[test]
+fn direct_config_replaces_non_file_credential_store() {
+    let input = r#"
+cli_auth_credentials_store = "keyring"
+model = "gpt-5.4"
+"#;
+
+    let output = patch_config_for_direct(Some(input.to_string())).expect("patch direct");
+
+    assert!(output.contains("cli_auth_credentials_store = \"file\""));
+    assert!(!output.contains("keyring"));
+    assert!(output.contains("model = \"gpt-5.4\""));
 }
 
 #[test]

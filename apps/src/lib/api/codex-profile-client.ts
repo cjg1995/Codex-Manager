@@ -255,12 +255,14 @@ export const codexProfileClient = {
   async applyDirectAccount(params: {
     accountId: string;
     codexHome?: string | null;
+    launchApp?: boolean;
   }): Promise<CodexProfileStatus> {
     const result = await invoke<unknown>(
       "service_codex_profile_apply_direct_account",
       withAddr({
         accountId: params.accountId,
         codexHome: params.codexHome || null,
+        launchApp: params.launchApp === true,
       }),
     );
     return normalizeCodexProfileStatus(result);

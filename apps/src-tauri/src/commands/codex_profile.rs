@@ -78,10 +78,12 @@ pub async fn service_codex_profile_apply_direct_account(
     addr: Option<String>,
     account_id: String,
     codex_home: Option<String>,
+    launch_app: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let params = serde_json::json!({
         "accountId": account_id,
         "codexHome": codex_home,
+        "launchApp": launch_app.unwrap_or(false),
     });
     rpc_call_in_background("codexProfile/applyDirectAccount", addr, Some(params)).await
 }

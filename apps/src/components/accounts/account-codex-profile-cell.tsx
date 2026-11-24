@@ -31,7 +31,9 @@ export function AccountCodexProfileCell({
     !isCandidate ||
     isAnyAccountSwitching;
 
-  let buttonTitle = t("切换 Codex profile 到此账号");
+  let buttonTitle = state.opensDesktopApp
+    ? t("切换到此账号并打开 Codex。如果已经打开，会先关闭再打开")
+    : t("切换 Codex profile 到此账号");
   if (!state.isServiceReady) {
     buttonTitle = t("服务未连接，暂时无法切换 Codex 账号");
   } else if (state.isLoading) {

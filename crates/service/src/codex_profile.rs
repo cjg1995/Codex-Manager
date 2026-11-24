@@ -297,6 +297,7 @@ fn usable_account_token_candidates_by_account(
 pub(crate) fn apply_direct_account(
     account_id: Option<&str>,
     codex_home: Option<&str>,
+    launch_app: bool,
 ) -> Result<CodexProfileStatus, String> {
     let account_id = normalize_required(account_id, "missing accountId")?;
     let storage = open_storage()?;
@@ -330,29 +331,150 @@ pub(crate) fn apply_direct_account(
     ensure_usable_token(&token)?;
 
     with_codex_profile_operation_lock(|| {
-        let profile_dir = resolve_profile_dir(codex_home)?;
-        ensure_profile_dir_valid(&profile_dir)?;
-        let _ = ensure_managed_profile_migrated(&profile_dir);
-        ensure_backup(&profile_dir)?;
-        let auth_json = build_direct_auth_json(&account, &token)?;
-        let config_toml = patch_config_for_direct(read_optional(&profile_dir.join(CONFIG_FILE))?)?;
-        write_profile_files(
-            &profile_dir,
-            &auth_json,
-            &config_toml,
-            ManagedState {
-                profile_dir: profile_key(&profile_dir),
-                mode: CodexProfileMode::DirectAccount,
-                account_id: Some(account.id.clone()),
-                api_key_id: None,
-                gateway_base_url: None,
-                provider_id: PROVIDER_ID.to_string(),
-                updated_at: now_ts(),
-            },
-        )?;
-        persist_codex_home(&profile_dir)?;
-        status_for_profile_with_history_repair(&profile_dir, DEFAULT_HISTORY_PROVIDER_ID)
+        apply_direct_account_locked(&account, &token, codex_home, launch_app)
     })
+}
+
+fn apply_direct_account_locked(
+    account: &AccountDirectAuthProfile,
+    token: &Token,
+    codex_home: Option<&str>,
+    launch_app: bool,
+) -> Result<CodexProfileStatus, String> {
+    let profile_dir = resolve_profile_dir(codex_home)?;
+    ensure_profile_dir_valid(&profile_dir)?;
+    if launch_app {
+        ensure_launch_profile_matches(&profile_dir)?;
+    }
+    // Close the desktop app before replacing auth.json. A running Codex process
+    // keeps the previous login in memory and can write that login back on exit.
+    let install = if launch_app {
+        Some(crate::codex_desktop::close_running_codex()?)
+    } else {
+        None
+    };
+
+    let write_result = write_direct_account_profile(&profile_dir, account, token);
+    let (status, auth_json) = match write_result {
+        Ok(written) => written,
+        Err(err) => {
+            if let Some(install) = install.as_ref() {
+                let _ = crate::codex_desktop::launch(install);
+            }
+            return Err(err);
+        }
+    };
+
+    if let Some(install) = install {
+        let auth_path = profile_dir.join(AUTH_FILE);
+        let expected = match crate::codex_desktop::identity_from_auth_json(&auth_json) {
+            Ok(identity) => identity,
+            Err(err) => {
+                let _ = crate::codex_desktop::launch(&install);
+                return Err(err);
+            }
+        };
+        open_switched_codex(&install, &auth_path, &expected, &auth_json)?;
+    }
+    Ok(status)
+}
+
+fn write_direct_account_profile(
+    profile_dir: &Path,
+    account: &AccountDirectAuthProfile,
+    token: &Token,
+) -> Result<(CodexProfileStatus, String), String> {
+    let _ = ensure_managed_profile_migrated(profile_dir);
+    ensure_backup(profile_dir)?;
+    let auth_json = build_direct_auth_json(account, token)?;
+    let config_toml = patch_config_for_direct(read_optional(&profile_dir.join(CONFIG_FILE))?)?;
+    write_profile_files(
+        profile_dir,
+        &auth_json,
+        &config_toml,
+        ManagedState {
+            profile_dir: profile_key(profile_dir),
+            mode: CodexProfileMode::DirectAccount,
+            account_id: Some(account.id.clone()),
+            api_key_id: None,
+            gateway_base_url: None,
+            provider_id: PROVIDER_ID.to_string(),
+            updated_at: now_ts(),
+        },
+    )?;
+    persist_codex_home(profile_dir)?;
+    let status = status_for_profile_with_history_repair(profile_dir, DEFAULT_HISTORY_PROVIDER_ID)?;
+    Ok((status, auth_json))
+}
+
+fn open_switched_codex(
+    install: &crate::codex_desktop::DesktopInstall,
+    auth_path: &Path,
+    expected: &crate::codex_desktop::CodexAuthIdentity,
+    auth_json: &str,
+) -> Result<(), String> {
+    let mut last_error = String::new();
+    for attempt in 0..2 {
+        if attempt > 0 {
+            if let Err(err) = crate::codex_desktop::close_running_codex() {
+                last_error = format!("重新打开前无法关闭 Codex：{err}");
+                break;
+            }
+            if let Err(err) = write_atomic(auth_path, auth_json) {
+                last_error = err;
+                break;
+            }
+        }
+        let previous_pids = crate::codex_desktop::desktop_root_pids()?;
+        let not_before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or(0);
+        crate::codex_desktop::launch(install)?;
+        if let Err(err) = crate::codex_desktop::wait_for_new_desktop(
+            &previous_pids,
+            not_before,
+            Duration::from_secs(20),
+        ) {
+            last_error = err;
+            continue;
+        }
+        match crate::codex_desktop::confirm_auth_identity(
+            auth_path,
+            expected,
+            crate::codex_desktop::identity_stable_period(),
+        ) {
+            Ok(()) => return Ok(()),
+            Err(err) => last_error = err,
+        }
+    }
+    let _ = crate::codex_desktop::close_running_codex();
+    let _ = write_atomic(auth_path, auth_json);
+    Err(format!(
+        "打开 Codex 后没有确认到切换后的账号，已关闭程序。{last_error}"
+    ))
+}
+
+fn codex_app_profile_dir() -> Result<PathBuf, String> {
+    if let Ok(raw) = std::env::var(ENV_CODEX_HOME) {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return Ok(expand_home_prefix(trimmed));
+        }
+    }
+    default_profile_dir()
+}
+
+fn ensure_launch_profile_matches(profile_dir: &Path) -> Result<(), String> {
+    let desktop_dir = codex_app_profile_dir()?;
+    if crate::codex_desktop::paths_match(profile_dir, &desktop_dir) {
+        return Ok(());
+    }
+    Err(format!(
+        "Codex 桌面程序读取 {}，当前切换目录是 {}。目录不一致时打开的程序不会进入这个账号，已取消切换。",
+        desktop_dir.display(),
+        profile_dir.display()
+    ))
 }
 
 pub(crate) fn apply_gateway(
@@ -1926,7 +2048,16 @@ fn patch_config_for_direct(content: Option<String>) -> Result<String, String> {
             doc.as_table_mut().remove("model_providers");
         }
     }
+    ensure_file_credentials_store(&mut doc);
     Ok(doc.to_string())
+}
+
+fn ensure_file_credentials_store(doc: &mut DocumentMut) {
+    let current = doc.get("cli_auth_credentials_store").and_then(Item::as_str);
+    if current == Some("file") {
+        return;
+    }
+    doc["cli_auth_credentials_store"] = toml_value("file");
 }
 
 fn patch_config_for_gateway(content: Option<String>, base_url: &str) -> Result<String, String> {
