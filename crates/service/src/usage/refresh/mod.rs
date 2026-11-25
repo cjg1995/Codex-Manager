@@ -151,6 +151,14 @@ pub struct UsageRefreshCompletedEvent {
     pub completed_at: i64,
 }
 
+const BATCH_USAGE_REFRESH_PROGRESS: &str = "batch_progress";
+
+impl UsageRefreshCompletedEvent {
+    pub fn is_batch_progress(&self) -> bool {
+        self.source == BATCH_USAGE_REFRESH_PROGRESS
+    }
+}
+
 type UsageRefreshCompletedHandler = Arc<dyn Fn(UsageRefreshCompletedEvent) + Send + Sync>;
 
 static USAGE_REFRESH_COMPLETED_HANDLER: OnceLock<Mutex<Option<UsageRefreshCompletedHandler>>> =

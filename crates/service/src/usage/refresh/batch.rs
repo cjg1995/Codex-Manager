@@ -13,9 +13,10 @@ use std::time::{Duration, Instant};
 
 use super::{
     notify_usage_refresh_completed, open_storage, record_usage_refresh_failure,
-    record_usage_refresh_metrics, refresh_usage_for_token, DEFAULT_USAGE_POLL_BATCH_LIMIT,
-    DEFAULT_USAGE_POLL_CYCLE_BUDGET_SECS, ENV_USAGE_POLL_BATCH_LIMIT,
-    ENV_USAGE_POLL_CYCLE_BUDGET_SECS, USAGE_POLL_CURSOR, USAGE_REFRESH_WORKERS,
+    record_usage_refresh_metrics, refresh_usage_for_token, BATCH_USAGE_REFRESH_PROGRESS,
+    DEFAULT_USAGE_POLL_BATCH_LIMIT, DEFAULT_USAGE_POLL_CYCLE_BUDGET_SECS,
+    ENV_USAGE_POLL_BATCH_LIMIT, ENV_USAGE_POLL_CYCLE_BUDGET_SECS, USAGE_POLL_CURSOR,
+    USAGE_REFRESH_WORKERS,
 };
 
 /// 函数 `refresh_usage_for_all_accounts`
@@ -446,6 +447,7 @@ fn run_usage_refresh_task(storage: &Storage, task: UsageRefreshBatchTask) -> Res
     match refresh_usage_for_token(storage, &task.token, task.workspace_id.as_deref(), None) {
         Ok(_) => {
             record_usage_refresh_metrics(true, started_at);
+            notify_usage_refresh_completed(BATCH_USAGE_REFRESH_PROGRESS, 1, 1);
             Ok(())
         }
         Err(err) => {

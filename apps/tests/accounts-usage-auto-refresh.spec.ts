@@ -84,11 +84,16 @@ const UNCHANGED_NEWER_USAGE = {
   capturedAt: 1_000,
 };
 
-test("accounts page refreshes usage after backend polling writes a new snapshot", async ({
+test("accounts page updates quota before a manual batch refresh finishes", async ({
   page,
 }) => {
   let usageListCount = 0;
-  let newSnapshotAvailable = false;
+  let currentUsage = OLD_USAGE;
+  let laterUsage = UNCHANGED_NEWER_USAGE;
+  let finishBatchRefresh!: () => void;
+  const batchCompletion = new Promise<void>((resolve) => {
+    finishBatchRefresh = resolve;
+  });
 
   await page.route("**/api/runtime**", async (route) => {
     await route.fulfill({
@@ -177,11 +182,13 @@ test("accounts page refreshes usage after backend polling writes a new snapshot"
     if (method === "account/usage/list") {
       usageListCount += 1;
       await ok({
-        items: [
-          newSnapshotAvailable ? NEW_USAGE : OLD_USAGE,
-          UNCHANGED_NEWER_USAGE,
-        ],
+        items: [currentUsage, laterUsage],
       });
+      return;
+    }
+    if (method === "account/usage/refresh") {
+      await batchCompletion;
+      await ok({ ok: true });
       return;
     }
 
@@ -207,7 +214,7 @@ test("accounts page refreshes usage after backend polling writes a new snapshot"
     .first();
 
   await expect(row.getByText("85%", { exact: true }).first()).toBeVisible();
-  newSnapshotAvailable = true;
+  currentUsage = NEW_USAGE;
   await page.evaluate(() => {
     window.dispatchEvent(
       new CustomEvent("usage-refresh-completed", {
@@ -219,4 +226,44 @@ test("accounts page refreshes usage after backend polling writes a new snapshot"
     timeout: 2_000,
   });
   expect(usageListCount).toBeGreaterThanOrEqual(2);
+
+  const slowRow = page
+    .locator("tbody tr")
+    .filter({ hasText: "newer-snapshot@example.com" })
+    .first();
+  const batchRequest = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/rpc") &&
+      request.postDataJSON()?.method === "account/usage/refresh",
+  );
+  const accountActions = page.getByText("账号操作", { exact: true });
+  const refreshAll = page.getByRole("menuitem", { name: /刷新账号用量/ });
+
+  await accountActions.click();
+  await refreshAll.click();
+  await batchRequest;
+  try {
+    currentUsage = { ...NEW_USAGE, usedPercent: 55, capturedAt: 300 };
+    await page.evaluate(() => {
+      window.dispatchEvent(
+        new CustomEvent("usage-refresh-completed", {
+          detail: { source: "batch_progress", processed: 1, total: 1 },
+        }),
+      );
+    });
+
+    await expect(row.getByText("45%", { exact: true }).first()).toBeVisible({
+      timeout: 2_000,
+    });
+    await expect(slowRow.getByText("80%", { exact: true }).first()).toBeVisible();
+    await accountActions.click();
+    await expect(refreshAll).toBeDisabled();
+  } finally {
+    laterUsage = { ...UNCHANGED_NEWER_USAGE, usedPercent: 50, capturedAt: 1_100 };
+    finishBatchRefresh();
+  }
+
+  await expect(refreshAll).toBeEnabled();
+  await page.keyboard.press("Escape");
+  await expect(slowRow.getByText("50%", { exact: true }).first()).toBeVisible();
 });

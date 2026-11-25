@@ -425,18 +425,35 @@ export function useAccounts() {
 
     let disposed = false;
     let unlisten: (() => void) | null = null;
-    const refreshVisibleUsageData = () => {
-      void Promise.all([
-        queryClient.refetchQueries({ queryKey: ["usage", "list"], type: "active" }),
-        queryClient.invalidateQueries({ queryKey: ["usage-aggregate"] }),
-        queryClient.invalidateQueries({ queryKey: ["today-summary"] }),
-        queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
-        queryClient.invalidateQueries({ queryKey: CODEX_PROFILE_CANDIDATES_QUERY_KEY }),
-      ]);
+    let usageReadInProgress = false;
+    let usageReadRequested = false;
+    const refreshVisibleUsageList = async () => {
+      usageReadRequested = true;
+      if (usageReadInProgress) return;
+
+      usageReadInProgress = true;
+      try {
+        // If another account finishes during a read, read again for its new snapshot.
+        while (!disposed && usageReadRequested) {
+          usageReadRequested = false;
+          await queryClient.refetchQueries({ queryKey: ["usage", "list"], type: "active" });
+        }
+      } finally {
+        usageReadInProgress = false;
+      }
     };
 
-    void listenUsageRefreshCompleted(() => {
-      refreshVisibleUsageData();
+    void listenUsageRefreshCompleted(({ source }) => {
+      if (disposed) return;
+      void refreshVisibleUsageList();
+      if (source !== "batch_progress") {
+        void Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["usage-aggregate"] }),
+          queryClient.invalidateQueries({ queryKey: ["today-summary"] }),
+          queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
+          queryClient.invalidateQueries({ queryKey: CODEX_PROFILE_CANDIDATES_QUERY_KEY }),
+        ]);
+      }
     }).then((cleanup) => {
       if (disposed) {
         cleanup();

@@ -2,7 +2,7 @@ use super::{
     build_usage_request_headers, summarize_usage_error_response, usage_http_client,
     CHATGPT_ACCOUNT_ID_HEADER_NAME,
 };
-use codexmanager_core::storage::{now_ts, Account, Storage};
+use codexmanager_core::storage::{now_ts, Account, Storage, Token};
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Client;
 use reqwest::StatusCode;
@@ -261,6 +261,107 @@ fn usage_header_runtime_scope() -> (MutexGuard<'static, ()>, UsageHeaderRuntimeR
     let _ = crate::gateway::set_originator("codex_cli_rs");
     let _ = crate::gateway::set_residency_requirement(None);
     (guard, restore)
+}
+
+#[test]
+fn batch_usage_refresh_publishes_snapshot_before_slow_account_finishes() {
+    let _guard = crate::test_env_guard();
+    let db = TestDbGuard::new("batch-progress");
+    let storage = Storage::open(&db.db_path).expect("reopen test storage");
+    let now = now_ts();
+    for (sort, account_id) in [(0, "fast"), (1, "slow")] {
+        storage
+            .insert_account(&Account {
+                id: account_id.into(),
+                label: account_id.into(),
+                issuer: "issuer".into(),
+                chatgpt_account_id: None,
+                workspace_id: None,
+                group_name: None,
+                sort,
+                status: "active".into(),
+                created_at: now,
+                updated_at: now,
+            })
+            .expect("seed account");
+        storage
+            .insert_token(&Token {
+                account_id: account_id.into(),
+                id_token: String::new(),
+                access_token: account_id.into(),
+                refresh_token: "refresh-token".into(),
+                api_key_access_token: None,
+                last_refresh: now,
+            })
+            .expect("seed token");
+    }
+
+    let server = Server::http("127.0.0.1:0").expect("bind mock usage server");
+    let server_url = format!("http://{}", server.server_addr());
+    let usage_base_url = EnvVarRestore::set("CODEXMANAGER_USAGE_BASE_URL", &server_url);
+    let upstream_proxy = EnvVarRestore::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "");
+    let no_proxy = EnvVarRestore::set("NO_PROXY", "chatgpt.com");
+    super::reload_usage_http_client_from_env();
+
+    let events = crate::usage_refresh::subscribe_usage_refresh_completed();
+    let (release_slow, wait_for_release) = std::sync::mpsc::channel();
+    let timeout = Duration::from_secs(10);
+    thread::scope(|scope| {
+        scope.spawn(move || {
+            let respond = |request: tiny_http::Request| {
+                let body = r#"{"rate_limit":{"primary_window":{"used_percent":25,"limit_window_seconds":18000}}}"#;
+                let content_type = Header::from_bytes("Content-Type", "application/json").unwrap();
+                request
+                    .respond(Response::from_string(body).with_header(content_type))
+                    .expect("send usage response");
+            };
+            let mut slow_request = None;
+            for _ in 0..2 {
+                let request = server.recv_timeout(timeout).unwrap().expect("usage request");
+                if request.headers().iter().any(|header| {
+                    header.field.equiv("Authorization") && header.value.as_str() == "Bearer slow"
+                }) {
+                    slow_request = Some(request);
+                } else {
+                    respond(request);
+                }
+            }
+            wait_for_release.recv_timeout(timeout).expect("release slow account");
+            respond(slow_request.expect("slow account request"));
+        });
+
+        let batch = scope.spawn(crate::usage_refresh::refresh_usage_for_all_accounts);
+        let progress = events.recv_timeout(timeout).expect("first account event");
+        assert!(progress.is_batch_progress());
+        assert!(storage
+            .latest_usage_snapshot_for_account("fast")
+            .unwrap()
+            .is_some());
+        assert!(storage
+            .latest_usage_snapshot_for_account("slow")
+            .unwrap()
+            .is_none());
+
+        release_slow.send(()).expect("release slow account");
+        assert!(events
+            .recv_timeout(timeout)
+            .expect("second account event")
+            .is_batch_progress());
+        let completed = events
+            .recv_timeout(timeout)
+            .expect("batch completion event");
+        assert_eq!(
+            (completed.source, completed.processed, completed.total),
+            ("manual_all", 2, 2)
+        );
+        batch
+            .join()
+            .expect("join batch")
+            .expect("refresh both accounts");
+    });
+
+    drop((usage_base_url, upstream_proxy, no_proxy));
+    super::reload_usage_http_client_from_env();
 }
 
 struct UsageHeaderRuntimeRestore {

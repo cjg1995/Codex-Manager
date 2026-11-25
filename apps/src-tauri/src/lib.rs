@@ -123,7 +123,9 @@ pub fn run() {
             })?;
             let usage_refresh_event_app = app.handle().clone();
             codexmanager_service::set_usage_refresh_completed_handler(move |event| {
-                refresh_tray_menu_after_usage_update(&usage_refresh_event_app);
+                if !event.is_batch_progress() {
+                    refresh_tray_menu_after_usage_update(&usage_refresh_event_app);
+                }
                 let payload = UsageRefreshCompletedPayload {
                     source: event.source,
                     processed: event.processed,
