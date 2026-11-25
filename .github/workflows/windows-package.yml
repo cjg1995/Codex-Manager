@@ -77,6 +77,11 @@ jobs:
       - name: Prepare frontend dist
         uses: ./.github/actions/prepare-frontend-dist
 
+      - name: Test Codex account switch RPC transport
+        env:
+          CODEXMANAGER_RPC_TOKEN: codexmanager-transport-test
+        run: cargo test --locked --release --manifest-path apps/src-tauri/Cargo.toml --lib rpc_client::transport::tests -- --nocapture
+
       - name: Build NSIS installer
         uses: ./.github/actions/build-tauri-with-retry
         with:

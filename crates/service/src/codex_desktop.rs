@@ -16,6 +16,9 @@ const STORE_APP_ID: &str = "App";
 const CLOSE_GRACE_PERIOD: Duration = Duration::from_secs(8);
 #[cfg(windows)]
 const CLOSE_FORCE_PERIOD: Duration = Duration::from_secs(5);
+#[cfg(windows)]
+const LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(windows)]
 const IDENTITY_STABLE_PERIOD: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,7 +28,6 @@ pub(crate) struct ObservedProcess {
     pub name: String,
     pub exe: Option<PathBuf>,
     pub cmd: Vec<String>,
-    pub start_time: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,7 +100,13 @@ pub(crate) fn processes_to_stop(processes: &[ObservedProcess]) -> Result<Vec<u32
             "发现无法确认归属的 ChatGPT.exe（PID {ids}）。为避免关掉其他程序，已取消切换。"
         ));
     }
-    Ok(descendant_pids(processes, &roots))
+    let mut manager_pids = vec![std::process::id()];
+    manager_pids.extend(processes.iter().filter_map(|process| {
+        let name = process.name.to_ascii_lowercase();
+        (process_name_is(&name, "codexmanager") || process_name_is(&name, "codexmanager-service"))
+            .then_some(process.pid)
+    }));
+    Ok(descendant_pids(processes, &roots, &manager_pids))
 }
 
 pub(crate) fn select_running_install(processes: &[ObservedProcess]) -> Option<DesktopInstall> {
@@ -204,7 +212,7 @@ pub(crate) fn close_running_codex() -> Result<DesktopInstall, String> {
     }
 }
 
-pub(crate) fn launch(install: &DesktopInstall) -> Result<(), String> {
+pub(crate) fn launch(install: &DesktopInstall) -> Result<u32, String> {
     #[cfg(windows)]
     {
         launch_windows(install)
@@ -216,85 +224,66 @@ pub(crate) fn launch(install: &DesktopInstall) -> Result<(), String> {
     }
 }
 
-pub(crate) fn desktop_root_pids() -> Result<Vec<u32>, String> {
-    #[cfg(windows)]
-    {
-        Ok(snapshot_processes()
-            .iter()
-            .filter(|process| is_desktop_root(process))
-            .map(|process| process.pid)
-            .collect())
-    }
-    #[cfg(not(windows))]
-    {
-        Err("当前系统还不能确认 Codex 是否已经打开。".to_string())
-    }
-}
-
-pub(crate) fn wait_for_new_desktop(
-    previous_pids: &[u32],
-    not_before_unix: u64,
-    timeout: Duration,
-) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        let started = Instant::now();
-        loop {
-            let processes = snapshot_processes();
-            if processes
-                .iter()
-                .any(|process| is_new_desktop_root(process, previous_pids, not_before_unix))
-            {
-                return Ok(());
-            }
-            if started.elapsed() >= timeout {
-                return Err("Codex 没有打开。".to_string());
-            }
-            thread::sleep(Duration::from_millis(250));
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (previous_pids, not_before_unix, timeout);
-        Err("当前系统还不能确认 Codex 是否已经打开。".to_string())
-    }
-}
-
-pub(crate) fn confirm_auth_identity(
+pub(crate) fn confirm_launch(
+    pid: u32,
     path: &Path,
     expected: &CodexAuthIdentity,
-    stable_for: Duration,
 ) -> Result<(), String> {
-    let deadline = Instant::now() + stable_for + Duration::from_secs(2);
-    let mut matched_at = None;
-    let mut mismatch = None;
-    while Instant::now() < deadline {
-        match read_auth_identity(path) {
-            Ok(actual) if auth_identity_matches(expected, &actual) => {
-                let started = matched_at.get_or_insert_with(Instant::now);
-                if started.elapsed() >= stable_for {
-                    return Ok(());
-                }
-            }
-            Ok(actual) => {
-                matched_at = None;
-                mismatch = Some(actual.account_id);
-            }
-            Err(_) => matched_at = None,
-        }
-        thread::sleep(Duration::from_millis(300));
+    #[cfg(windows)]
+    {
+        wait_for_window_and_auth(
+            path,
+            expected,
+            LAUNCH_TIMEOUT,
+            IDENTITY_STABLE_PERIOD,
+            || has_main_window(pid),
+        )
     }
-    if matched_at.is_some() {
-        return Ok(());
+    #[cfg(not(windows))]
+    {
+        let _ = (pid, path, expected);
+        Err("当前系统还不能确认 Codex 是否已经打开。".to_string())
     }
-    if let Some(account_id) = mismatch {
-        return Err(format!("当前登录标识是 {account_id}"));
-    }
-    Err("没有读到切换后的登录信息".to_string())
 }
 
-pub(crate) fn identity_stable_period() -> Duration {
-    IDENTITY_STABLE_PERIOD
+#[cfg(any(windows, test))]
+fn wait_for_window_and_auth(
+    path: &Path,
+    expected: &CodexAuthIdentity,
+    timeout: Duration,
+    stable_for: Duration,
+    mut has_window: impl FnMut() -> bool,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    let mut matched_at = None;
+    loop {
+        let error = if has_window() {
+            match read_auth_identity(path) {
+                Ok(actual) if auth_identity_matches(expected, &actual) => {
+                    let started = matched_at.get_or_insert_with(Instant::now);
+                    if started.elapsed() >= stable_for {
+                        return Ok(());
+                    }
+                    "Codex 已打开，登录信息尚未稳定。"
+                }
+                Ok(_) => {
+                    matched_at = None;
+                    "Codex 已打开，登录信息与所选账号不一致。"
+                }
+                Err(_) => {
+                    matched_at = None;
+                    "Codex 已打开，但未能读取登录信息。"
+                }
+            }
+        } else {
+            matched_at = None;
+            "已写入所选账号的配置，但未检测到 Codex 窗口。"
+        };
+        if Instant::now() >= deadline {
+            return Err(error.to_string());
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
 }
 
 fn classify_chatgpt(process: &ObservedProcess) -> CodexProcessKind {
@@ -379,21 +368,6 @@ fn command_is_helper(cmd: &[String]) -> bool {
         .any(|arg| arg == "--type" || arg.starts_with("--type="))
 }
 
-fn is_desktop_root(process: &ObservedProcess) -> bool {
-    classify_process(process) == CodexProcessKind::Desktop && !command_is_helper(&process.cmd)
-}
-
-fn is_new_desktop_root(
-    process: &ObservedProcess,
-    previous_pids: &[u32],
-    not_before_unix: u64,
-) -> bool {
-    if !is_desktop_root(process) || previous_pids.contains(&process.pid) {
-        return false;
-    }
-    process.start_time == 0 || process.start_time + 2 >= not_before_unix
-}
-
 fn process_name_is(actual: &str, expected_stem: &str) -> bool {
     actual == expected_stem || actual == format!("{expected_stem}.exe")
 }
@@ -410,7 +384,11 @@ fn normalized_path(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
-fn descendant_pids(processes: &[ObservedProcess], roots: &[u32]) -> Vec<u32> {
+fn descendant_pids(
+    processes: &[ObservedProcess],
+    roots: &[u32],
+    excluded_pids: &[u32],
+) -> Vec<u32> {
     let mut children = std::collections::HashMap::<u32, Vec<u32>>::new();
     for process in processes {
         if let Some(parent) = process.parent_pid {
@@ -421,7 +399,7 @@ fn descendant_pids(processes: &[ObservedProcess], roots: &[u32]) -> Vec<u32> {
     let mut seen = std::collections::HashSet::new();
     let mut stack = roots.to_vec();
     while let Some(pid) = stack.pop() {
-        if pid == 0 || !seen.insert(pid) {
+        if pid == 0 || excluded_pids.contains(&pid) || !seen.insert(pid) {
             continue;
         }
         ordered.push(pid);
@@ -470,29 +448,25 @@ fn poll_until_stopped(timeout: Duration) -> Result<Option<()>, String> {
 
 #[cfg(windows)]
 fn request_stop(pids: &[u32], force: bool) -> Result<(), String> {
+    let mut args = Vec::new();
     for pid in pids {
-        if *pid == 0 || *pid == std::process::id() {
-            continue;
-        }
-        let mut args = Vec::new();
-        if force {
-            args.push("/F".to_string());
-        }
-        args.push("/T".to_string());
         args.push("/PID".to_string());
         args.push(pid.to_string());
-        run_hidden("taskkill.exe", &args)?;
     }
-    Ok(())
+    if args.is_empty() {
+        return Ok(());
+    }
+    // The target list already follows the process tree and excludes the manager.
+    if force {
+        args.push("/F".to_string());
+    }
+    run_hidden("taskkill.exe", &args)
 }
 
 #[cfg(windows)]
-fn launch_windows(install: &DesktopInstall) -> Result<(), String> {
+fn launch_windows(install: &DesktopInstall) -> Result<u32, String> {
     if let Some(family) = install.package_family_name.as_deref() {
-        let target = format!("shell:AppsFolder\\{family}!{STORE_APP_ID}");
-        let mut command = Command::new("explorer.exe");
-        command.arg(target);
-        return spawn_detached(command);
+        return activate_store_app(family).map_err(|err| format!("打开 Codex 失败：{err}"));
     }
     let Some(executable) = install.executable.as_ref() else {
         return Err("没有可打开的 Codex 程序。".to_string());
@@ -501,7 +475,74 @@ fn launch_windows(install: &DesktopInstall) -> Result<(), String> {
     if let Some(directory) = executable.parent() {
         command.current_dir(directory);
     }
-    spawn_detached(command)
+    command
+        .spawn()
+        .map(|child| child.id())
+        .map_err(|err| format!("打开 Codex 失败：{err}"))
+}
+
+#[cfg(windows)]
+fn activate_store_app(family: &str) -> windows::core::Result<u32> {
+    use windows::core::{HSTRING, PCWSTR};
+    use windows::Win32::System::Com::{
+        CoAllowSetForegroundWindow, CoCreateInstance, CoInitializeEx, CoUninitialize,
+        CLSCTX_LOCAL_SERVER, COINIT_MULTITHREADED,
+    };
+    use windows::Win32::UI::Shell::{
+        ApplicationActivationManager, IApplicationActivationManager, AO_NOERRORUI,
+    };
+
+    let app_id = HSTRING::from(format!("{family}!{STORE_APP_ID}"));
+    unsafe {
+        CoInitializeEx(None, COINIT_MULTITHREADED)?;
+        let result = (|| {
+            let manager: IApplicationActivationManager =
+                CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_LOCAL_SERVER)?;
+            let _ = CoAllowSetForegroundWindow(&manager, None);
+            manager.ActivateApplication(&app_id, PCWSTR::null(), AO_NOERRORUI)
+        })();
+        CoUninitialize();
+        result
+    }
+}
+
+#[cfg(windows)]
+fn has_main_window(pid: u32) -> bool {
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindow, GetWindowTextLengthW, GetWindowThreadProcessId, IsWindowVisible,
+        GW_OWNER,
+    };
+
+    struct WindowSearch {
+        pid: u32,
+        found: bool,
+    }
+
+    unsafe extern "system" fn visit(window: HWND, context: LPARAM) -> BOOL {
+        let search = &mut *(context.0 as *mut WindowSearch);
+        let mut pid = 0;
+        GetWindowThreadProcessId(window, Some(&mut pid));
+        if pid == search.pid
+            && IsWindowVisible(window).as_bool()
+            && GetWindow(window, GW_OWNER).0 == 0
+            && GetWindowTextLengthW(window) > 0
+        {
+            search.found = true;
+            return BOOL(0);
+        }
+        BOOL(1)
+    }
+
+    let mut search = WindowSearch { pid, found: false };
+    // EnumWindows invokes the callback synchronously while search is in scope.
+    let _ = unsafe {
+        EnumWindows(
+            Some(visit),
+            LPARAM(&mut search as *mut WindowSearch as isize),
+        )
+    };
+    search.found
 }
 
 #[cfg(windows)]
@@ -542,10 +583,13 @@ fn collect_store_installs(windowsapps: &Path, found: &mut Vec<DesktopInstall>) {
         return;
     };
     for entry in entries.flatten() {
-        let exe = entry.path().join("app").join("ChatGPT.exe");
-        if exe.is_file() {
-            if let Some(install) = install_from_path(&exe) {
-                found.push(install);
+        let app_path = entry.path().join("app");
+        for executable in ["ChatGPT.exe", "Codex.exe"] {
+            let exe = app_path.join(executable);
+            if exe.is_file() {
+                if let Some(install) = install_from_path(&exe) {
+                    found.push(install);
+                }
             }
         }
     }
@@ -600,7 +644,6 @@ fn snapshot_processes() -> Vec<ObservedProcess> {
             name: process.name().to_string(),
             exe: process.exe().map(Path::to_path_buf),
             cmd: process.cmd().to_vec(),
-            start_time: process.start_time(),
         })
         .collect()
 }
@@ -615,17 +658,6 @@ fn run_hidden(program: &str, args: &[String]) -> Result<(), String> {
         .output()
         .map(|_| ())
         .map_err(|err| format!("无法关闭 Codex：{err}"))
-}
-
-#[cfg(windows)]
-fn spawn_detached(mut command: Command) -> Result<(), String> {
-    let mut child = command
-        .spawn()
-        .map_err(|err| format!("打开 Codex 失败：{err}"))?;
-    thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(())
 }
 
 #[cfg(test)]
@@ -646,7 +678,6 @@ mod tests {
             name: name.to_string(),
             exe: exe.map(PathBuf::from),
             cmd: cmd.iter().map(|arg| (*arg).to_string()).collect(),
-            start_time: 0,
         }
     }
 
@@ -737,6 +768,23 @@ mod tests {
     }
 
     #[test]
+    fn stop_list_keeps_the_switching_service_and_manager_running() {
+        let current = std::process::id();
+        let processes = vec![
+            process(10, None, "ChatGPT.exe", Some(&store_exe()), &[]),
+            process(20, Some(10), "CodexManager.exe", None, &[]),
+            process(21, Some(20), "msedgewebview2.exe", None, &[]),
+            process(current, Some(10), "test-service.exe", None, &[]),
+            process(30, Some(current), "test-helper.exe", None, &[]),
+            process(40, Some(20), "ChatGPT.exe", Some(&store_exe()), &[]),
+        ];
+
+        let mut stopped = processes_to_stop(&processes).expect("stop list");
+        stopped.sort_unstable();
+        assert_eq!(stopped, vec![10, 40]);
+    }
+
+    #[test]
     fn unknown_chatgpt_cancels_before_any_stop_list() {
         let processes = vec![process(
             13,
@@ -768,6 +816,43 @@ mod tests {
         assert!(auth_identity_matches(&expected, &same));
         assert!(!auth_identity_matches(&expected, &other));
         assert!(!auth_identity_matches(&expected, &replaced));
+    }
+
+    #[test]
+    fn launch_confirmation_requires_a_window_and_stable_matching_auth() {
+        let path = std::env::temp_dir().join(format!(
+            "codexmanager-launch-test-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        let auth = auth_json("acct-1", "ws-1");
+        let expected = identity_from_auth_json(&auth).expect("expected identity");
+        fs::write(&path, auth).expect("write matching auth");
+        let no_window =
+            wait_for_window_and_auth(&path, &expected, Duration::ZERO, Duration::ZERO, || false);
+        let not_stable = wait_for_window_and_auth(
+            &path,
+            &expected,
+            Duration::ZERO,
+            Duration::from_secs(3),
+            || true,
+        );
+        let ready =
+            wait_for_window_and_auth(&path, &expected, Duration::ZERO, Duration::ZERO, || true);
+        fs::write(&path, auth_json("acct-2", "ws-2")).expect("write different auth");
+        let wrong_account =
+            wait_for_window_and_auth(&path, &expected, Duration::ZERO, Duration::ZERO, || true);
+        fs::remove_file(path).expect("remove test auth");
+
+        assert!(no_window.expect_err("missing window").contains("未检测到"));
+        assert!(not_stable.expect_err("unstable auth").contains("尚未稳定"));
+        assert!(ready.is_ok());
+        assert!(wrong_account
+            .expect_err("different account")
+            .contains("不一致"));
     }
 
     #[cfg(windows)]

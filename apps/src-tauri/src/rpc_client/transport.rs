@@ -10,6 +10,15 @@ const RPC_CONNECT_TIMEOUT: Duration = Duration::from_millis(400);
 const RPC_DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(10);
 const RPC_BULK_USAGE_REFRESH_IO_TIMEOUT: Duration = Duration::from_secs(600);
 const RPC_ACCOUNT_IMPORT_IO_TIMEOUT: Duration = Duration::from_secs(600);
+const RPC_CODEX_SWITCH_IO_TIMEOUT: Duration = Duration::from_secs(120);
+
+fn is_codex_desktop_switch(method: &str, params: Option<&serde_json::Value>) -> bool {
+    method == "codexProfile/applyDirectAccount"
+        && params
+            .and_then(|value| value.get("launchApp"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+}
 
 /// 函数 `rpc_io_timeout`
 ///
@@ -24,6 +33,10 @@ const RPC_ACCOUNT_IMPORT_IO_TIMEOUT: Duration = Duration::from_secs(600);
 /// # 返回
 /// 返回函数执行结果
 fn rpc_io_timeout(method: &str, params: Option<&serde_json::Value>) -> Duration {
+    if is_codex_desktop_switch(method, params) {
+        return RPC_CODEX_SWITCH_IO_TIMEOUT;
+    }
+
     if method == "account/import" {
         return RPC_ACCOUNT_IMPORT_IO_TIMEOUT;
     }
@@ -42,7 +55,7 @@ fn rpc_io_timeout(method: &str, params: Option<&serde_json::Value>) -> Duration 
     RPC_DEFAULT_IO_TIMEOUT
 }
 
-/// 函数 `rpc_call_on_socket`
+/// 函数 `rpc_call_on_stream`
 ///
 /// 作者: gaohongshun
 ///
@@ -52,28 +65,19 @@ fn rpc_io_timeout(method: &str, params: Option<&serde_json::Value>) -> Duration 
 /// - method: 参数 method
 /// - addr: 参数 addr
 /// - sock: 参数 sock
+/// - stream: 已连接的服务套接字
 /// - params: 参数 params
 ///
 /// # 返回
 /// 返回函数执行结果
-fn rpc_call_on_socket(
+fn rpc_call_on_stream(
     method: &str,
     addr: &str,
     sock: SocketAddr,
+    mut stream: TcpStream,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     let io_timeout = rpc_io_timeout(method, params.as_ref());
-    let mut stream = TcpStream::connect_timeout(&sock, RPC_CONNECT_TIMEOUT).map_err(|e| {
-        let msg = format!("Failed to connect to service at {addr}: {e}");
-        log::warn!(
-            "rpc connect failed ({} -> {} via {}): {}",
-            method,
-            addr,
-            sock,
-            e
-        );
-        msg
-    })?;
     let _ = stream.set_read_timeout(Some(io_timeout));
     let _ = stream.set_write_timeout(Some(io_timeout));
 
@@ -172,10 +176,29 @@ pub(crate) fn rpc_call_with_sockets(
     }
     let mut last_err =
         "Empty response from service (service not ready, exited, or port occupied)".to_string();
+    let is_desktop_switch = is_codex_desktop_switch(method, params.as_ref());
     for attempt in 0..=1 {
         for sock in socket_addrs {
-            match rpc_call_on_socket(method, addr, *sock, params.clone()) {
+            let stream = match TcpStream::connect_timeout(sock, RPC_CONNECT_TIMEOUT) {
+                Ok(stream) => stream,
+                Err(err) => {
+                    log::warn!(
+                        "rpc connect failed ({} -> {} via {}): {}",
+                        method,
+                        addr,
+                        sock,
+                        err
+                    );
+                    last_err = format!("Failed to connect to service at {addr}: {err}");
+                    continue;
+                }
+            };
+            match rpc_call_on_stream(method, addr, *sock, stream, params.clone()) {
                 Ok(v) => return Ok(v),
+                // A lost response does not cancel the service's close/write/open sequence.
+                Err(err) if is_desktop_switch => {
+                    return Err(format!("未收到切换结果，原切换可能仍在执行。{err}"));
+                }
                 Err(err) => last_err = err,
             }
         }
@@ -209,7 +232,59 @@ pub(crate) fn rpc_call(
 
 #[cfg(test)]
 mod tests {
-    use super::{rpc_io_timeout, RPC_BULK_USAGE_REFRESH_IO_TIMEOUT, RPC_DEFAULT_IO_TIMEOUT};
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn codex_desktop_switch_waits_longer_than_a_regular_rpc() {
+        assert_eq!(
+            rpc_io_timeout(
+                "codexProfile/applyDirectAccount",
+                Some(&serde_json::json!({ "launchApp": true })),
+            ),
+            RPC_CODEX_SWITCH_IO_TIMEOUT
+        );
+        assert!(RPC_CODEX_SWITCH_IO_TIMEOUT > RPC_DEFAULT_IO_TIMEOUT);
+        assert_eq!(
+            rpc_io_timeout("codexProfile/applyDirectAccount", None),
+            RPC_DEFAULT_IO_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn codex_desktop_switch_does_not_resend_after_a_lost_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind primary listener");
+        let fallback = TcpListener::bind("127.0.0.1:0").expect("bind fallback listener");
+        let address = listener.local_addr().expect("primary address");
+        let fallback_address = fallback.local_addr().expect("fallback address");
+        let primary_server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept switch request");
+            assert!(stream.read(&mut [0; 1024]).expect("read switch request") > 0);
+            // The service received the request but closes without returning a result.
+        });
+        let fallback_server = std::thread::spawn(move || {
+            let (mut stream, _) = fallback.accept().expect("accept fallback connection");
+            stream
+                .read(&mut [0; 1024])
+                .expect("read fallback connection")
+                > 0
+        });
+
+        let result = rpc_call_with_sockets(
+            "codexProfile/applyDirectAccount",
+            &address.to_string(),
+            &[address, fallback_address],
+            Some(serde_json::json!({ "accountId": "account", "launchApp": true })),
+        );
+
+        // Wake the fallback listener with an empty connection if it got no request.
+        drop(TcpStream::connect(fallback_address));
+        primary_server.join().expect("primary server");
+        assert!(!fallback_server.join().expect("fallback server"));
+        assert!(result
+            .expect_err("missing RPC response")
+            .contains("原切换可能仍在执行"));
+    }
 
     /// 函数 `bulk_usage_refresh_uses_extended_timeout`
     ///
