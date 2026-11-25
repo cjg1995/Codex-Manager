@@ -1,7 +1,10 @@
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(any(windows, test))]
 use std::thread;
+#[cfg(any(windows, test))]
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
@@ -12,6 +15,8 @@ use sysinfo::{ProcessRefreshKind, System, UpdateKind};
 
 #[cfg(windows)]
 const STORE_APP_ID: &str = "App";
+#[cfg(windows)]
+const PROCESS_DISCOVERY_PERIOD: Duration = Duration::from_secs(2);
 #[cfg(windows)]
 const CLOSE_GRACE_PERIOD: Duration = Duration::from_secs(8);
 #[cfg(windows)]
@@ -25,6 +30,7 @@ const IDENTITY_STABLE_PERIOD: Duration = Duration::from_secs(3);
 pub(crate) struct ObservedProcess {
     pub pid: u32,
     pub parent_pid: Option<u32>,
+    pub start_time: u64,
     pub name: String,
     pub exe: Option<PathBuf>,
     pub cmd: Vec<String>,
@@ -85,20 +91,10 @@ pub(crate) fn processes_to_stop(processes: &[ObservedProcess]) -> Result<Vec<u32
     let mut roots = Vec::new();
     for process in processes {
         match classify_process(process) {
-            CodexProcessKind::UnknownChatGpt => unknown.push(process.pid),
+            CodexProcessKind::UnknownChatGpt => unknown.push(process),
             CodexProcessKind::Desktop | CodexProcessKind::AppServer => roots.push(process.pid),
             CodexProcessKind::Ignore => {}
         }
-    }
-    if !unknown.is_empty() {
-        let ids = unknown
-            .iter()
-            .map(|pid| pid.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(format!(
-            "发现无法确认归属的 ChatGPT.exe（PID {ids}）。为避免关掉其他程序，已取消切换。"
-        ));
     }
     let mut manager_pids = vec![std::process::id()];
     manager_pids.extend(processes.iter().filter_map(|process| {
@@ -106,7 +102,22 @@ pub(crate) fn processes_to_stop(processes: &[ObservedProcess]) -> Result<Vec<u32
         (process_name_is(&name, "codexmanager") || process_name_is(&name, "codexmanager-service"))
             .then_some(process.pid)
     }));
-    Ok(descendant_pids(processes, &roots, &manager_pids))
+    let targets = descendant_pids(processes, &roots, &manager_pids);
+    // The path of an Electron helper can disappear while its confirmed parent is exiting.
+    unknown.retain(|process| {
+        process.exe.is_some() || process.start_time == 0 || !targets.contains(&process.pid)
+    });
+    if !unknown.is_empty() {
+        let ids = unknown
+            .iter()
+            .map(|process| process.pid.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "发现无法确认归属的 ChatGPT.exe（PID {ids}）。为避免关掉其他程序，已取消切换。"
+        ));
+    }
+    Ok(targets)
 }
 
 pub(crate) fn select_running_install(processes: &[ObservedProcess]) -> Option<DesktopInstall> {
@@ -389,14 +400,26 @@ fn descendant_pids(
     roots: &[u32],
     excluded_pids: &[u32],
 ) -> Vec<u32> {
-    let mut children = std::collections::HashMap::<u32, Vec<u32>>::new();
+    let start_times: HashMap<_, _> = processes
+        .iter()
+        .map(|process| (process.pid, process.start_time))
+        .collect();
+    let mut children = HashMap::<u32, Vec<u32>>::new();
     for process in processes {
         if let Some(parent) = process.parent_pid {
+            // Windows can report the PID of a departed parent after that PID is reused.
+            if process.start_time != 0
+                && start_times
+                    .get(&parent)
+                    .is_some_and(|&start_time| start_time > process.start_time)
+            {
+                continue;
+            }
             children.entry(parent).or_default().push(process.pid);
         }
     }
     let mut ordered = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     let mut stack = roots.to_vec();
     while let Some(pid) = stack.pop() {
         if pid == 0 || excluded_pids.contains(&pid) || !seen.insert(pid) {
@@ -412,8 +435,10 @@ fn descendant_pids(
 
 #[cfg(windows)]
 fn close_running_codex_windows() -> Result<DesktopInstall, String> {
-    let processes = snapshot_processes();
-    let pids = processes_to_stop(&processes)?;
+    let mut system = System::new();
+    let mut snapshot = || snapshot_processes(&mut system);
+    let (processes, pids) =
+        wait_for_stop_targets(&mut snapshot, PROCESS_DISCOVERY_PERIOD, |_| true)?;
     let install = select_running_install(&processes)
         .or_else(|| discover_installed().ok())
         .ok_or_else(|| "找不到 Codex 桌面程序，账号未切换。".to_string())?;
@@ -421,26 +446,30 @@ fn close_running_codex_windows() -> Result<DesktopInstall, String> {
         return Ok(install);
     }
     request_stop(&pids, false)?;
-    if poll_until_stopped(CLOSE_GRACE_PERIOD)?.is_none() {
-        let remaining = processes_to_stop(&snapshot_processes())?;
+    let (_, remaining) = wait_for_stop_targets(&mut snapshot, CLOSE_GRACE_PERIOD, <[_]>::is_empty)?;
+    if !remaining.is_empty() {
         request_stop(&remaining, true)?;
-        if poll_until_stopped(CLOSE_FORCE_PERIOD)?.is_none() {
+        let (_, remaining) =
+            wait_for_stop_targets(&mut snapshot, CLOSE_FORCE_PERIOD, <[_]>::is_empty)?;
+        if !remaining.is_empty() {
             return Err("Codex 仍在运行，账号未切换。".to_string());
         }
     }
     Ok(install)
 }
 
-#[cfg(windows)]
-fn poll_until_stopped(timeout: Duration) -> Result<Option<()>, String> {
-    let started = Instant::now();
+#[cfg(any(windows, test))]
+fn wait_for_stop_targets(
+    mut snapshot: impl FnMut() -> Vec<ObservedProcess>,
+    timeout: Duration,
+    ready: impl Fn(&[u32]) -> bool,
+) -> Result<(Vec<ObservedProcess>, Vec<u32>), String> {
+    let deadline = Instant::now() + timeout;
     loop {
-        let processes = snapshot_processes();
-        if processes_to_stop(&processes)?.is_empty() {
-            return Ok(Some(()));
-        }
-        if started.elapsed() >= timeout {
-            return Ok(None);
+        let processes = snapshot();
+        let targets = processes_to_stop(&processes);
+        if targets.as_deref().is_ok_and(&ready) || Instant::now() >= deadline {
+            return targets.map(|pids| (processes, pids));
         }
         thread::sleep(Duration::from_millis(200));
     }
@@ -625,27 +654,66 @@ fn install_rank(install: &DesktopInstall) -> (u8, u8, String) {
 }
 
 #[cfg(windows)]
-fn snapshot_processes() -> Vec<ObservedProcess> {
-    let mut system = System::new();
+fn snapshot_processes(system: &mut System) -> Vec<ObservedProcess> {
     system.refresh_processes_specifics(
         ProcessRefreshKind::new()
-            .with_exe(UpdateKind::Always)
-            .with_cmd(UpdateKind::Always),
+            .with_exe(UpdateKind::OnlyIfNotSet)
+            .with_cmd(UpdateKind::OnlyIfNotSet),
     );
     system
         .processes()
         .iter()
-        .map(|(pid, process)| ObservedProcess {
-            pid: pid.as_u32(),
-            parent_pid: process
-                .parent()
-                .map(|parent| parent.as_u32())
-                .filter(|parent| *parent != 0),
-            name: process.name().to_string(),
-            exe: process.exe().map(Path::to_path_buf),
-            cmd: process.cmd().to_vec(),
+        .map(|(pid, process)| {
+            let pid = pid.as_u32();
+            let name = process.name();
+            let exe = process
+                .exe()
+                .filter(|path| !path.as_os_str().is_empty())
+                .map(Path::to_path_buf);
+            let exe = exe.or_else(|| {
+                let name = name.to_ascii_lowercase();
+                if process_name_is(&name, "chatgpt") || process_name_is(&name, "codex") {
+                    return query_process_image(pid);
+                }
+                None
+            });
+            ObservedProcess {
+                pid,
+                parent_pid: process.parent().map(|parent| parent.as_u32()),
+                start_time: process.start_time(),
+                name: name.to_string(),
+                exe,
+                cmd: process.cmd().to_vec(),
+            }
         })
         .collect()
+}
+
+#[cfg(windows)]
+fn query_process_image(pid: u32) -> Option<PathBuf> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let mut path = vec![0u16; 32768];
+    let mut len = path.len() as u32;
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let result = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            PWSTR(path.as_mut_ptr()),
+            &mut len,
+        );
+        let _ = CloseHandle(handle);
+        result.ok()?;
+    }
+    Some(PathBuf::from(OsString::from_wide(&path[..len as usize])))
 }
 
 #[cfg(windows)]
@@ -675,6 +743,7 @@ mod tests {
         ObservedProcess {
             pid,
             parent_pid: parent,
+            start_time: 1,
             name: name.to_string(),
             exe: exe.map(PathBuf::from),
             cmd: cmd.iter().map(|arg| (*arg).to_string()).collect(),
@@ -793,8 +862,70 @@ mod tests {
             Some(r"D:\tools\ChatGPT.exe"),
             &[],
         )];
-        let error = processes_to_stop(&processes).expect_err("unknown host");
+        let error = wait_for_stop_targets(|| processes.clone(), Duration::ZERO, |_| true)
+            .expect_err("unknown host");
         assert!(error.contains("PID 13"));
+    }
+
+    #[test]
+    fn a_pathless_helper_follows_its_confirmed_parent() {
+        let root = process(10, None, "ChatGPT.exe", Some(&store_exe()), &[]);
+        let mut helper = process(11, Some(10), "ChatGPT.exe", None, &[]);
+        helper.start_time = root.start_time + 1;
+
+        let mut stopped = processes_to_stop(&[root.clone(), helper.clone()]).expect("stop list");
+        stopped.sort_unstable();
+        assert_eq!(stopped, vec![10, 11]);
+
+        let mut reused_parent_pid = root;
+        reused_parent_pid.start_time = helper.start_time + 1;
+        assert!(processes_to_stop(&[reused_parent_pid, helper]).is_err());
+    }
+
+    #[test]
+    fn discovers_codex_when_its_image_path_becomes_available() {
+        let mut snapshots = [
+            vec![process(10, None, "ChatGPT.exe", None, &[])],
+            vec![process(10, None, "ChatGPT.exe", Some(&store_exe()), &[])],
+        ]
+        .into_iter();
+
+        let (processes, targets) = wait_for_stop_targets(
+            || snapshots.next().expect("discovery snapshot"),
+            Duration::from_secs(5),
+            |_| true,
+        )
+        .expect("identify Codex");
+        assert_eq!(targets, vec![10]);
+        assert!(select_running_install(&processes).is_some());
+    }
+
+    #[test]
+    fn waits_for_exiting_helpers_with_unavailable_image_paths() {
+        let mut snapshots = [
+            vec![
+                process(11, Some(10), "ChatGPT.exe", None, &[]),
+                process(12, Some(10), "ChatGPT.exe", None, &[]),
+            ],
+            Vec::new(),
+        ]
+        .into_iter();
+
+        let (_, remaining) = wait_for_stop_targets(
+            || snapshots.next().expect("shutdown snapshot"),
+            Duration::from_secs(5),
+            <[_]>::is_empty,
+        )
+        .expect("wait for the same shutdown");
+        assert!(remaining.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn queries_the_running_process_image_path() {
+        let image = query_process_image(std::process::id()).expect("process image");
+        let executable = std::env::current_exe().expect("current executable");
+        assert!(paths_match(&image, &executable));
     }
 
     #[test]
@@ -859,7 +990,7 @@ mod tests {
     #[test]
     #[ignore = "requires the developer machine's Codex desktop install"]
     fn developer_machine_codex_processes_are_identified() {
-        let processes = snapshot_processes();
+        let processes = snapshot_processes(&mut System::new());
         let current = std::process::id();
         let pids = processes_to_stop(&processes).expect("ambiguous ChatGPT.exe");
         assert!(

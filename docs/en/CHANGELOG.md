@@ -12,6 +12,7 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 ### Fixed
 
 - Fixed repeated Codex restarts during account switching on Windows. Each click sends one switch request and waits for the Codex window and the selected account's login configuration.
+- Fixed first-click account switching failures when Windows temporarily cannot read the executable path of an exiting Codex helper.
 
 ## [0.4.3] - 2026-07-19
 
